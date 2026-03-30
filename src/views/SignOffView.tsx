@@ -109,8 +109,8 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filteredRecords.map(record => (
-                <tr key={record.id} className="hover:bg-gray-50 transition-colors">
+              {filteredRecords.map((record, index) => (
+                <tr key={`${record.id}-${index}`} className="hover:bg-gray-50 transition-colors">
                   <td className="p-4">
                     <div className="font-medium text-gray-900">{getProductName(record.sku)}</div>
                     <div className="text-xs text-gray-500 font-mono mt-1">{record.sku}</div>

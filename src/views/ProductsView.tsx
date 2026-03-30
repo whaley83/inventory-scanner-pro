@@ -67,8 +67,8 @@ export function ProductsView({ products, aliases, onSync, isSyncing }: Props) {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {filteredProducts.map(product => (
-                <tr key={product.sku} className="hover:bg-gray-50 transition-colors">
+              {filteredProducts.map((product, index) => (
+                <tr key={`${product.sku}-${product.barcode}-${index}`} className="hover:bg-gray-50 transition-colors">
                   <td className="p-3 text-gray-600">{product.category}</td>
                   <td className="p-3 font-medium text-gray-900">{product.name}</td>
                   <td className="p-3 text-gray-600">{product.variantName}</td>

@@ -103,7 +103,7 @@ export default function App() {
             <div className="h-full flex flex-col items-center justify-center p-8 text-center">
               <Lock size={48} className="text-gray-300 mb-4" />
               <h2 className="text-xl font-bold text-gray-800 mb-2">Admin Access Required</h2>
-              <p className="text-gray-500 max-w-xs mb-6">Only administrators can change settings or sync with Google Sheets.</p>
+              <p className="text-gray-500 max-w-xs mb-6">Only administrators can change spreadsheet configuration or OAuth settings.</p>
               {!userEmail ? (
                 <button 
                   onClick={() => {

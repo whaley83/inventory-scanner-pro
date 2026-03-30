@@ -180,11 +180,42 @@ export function SettingsView() {
         </div>
         
         <div className="bg-blue-50 rounded-2xl p-5 border border-blue-100 text-sm text-blue-800">
-          <h3 className="font-semibold mb-2">Required Sheet Structure</h3>
-          <p className="mb-2">Your Google Sheet must have two tabs:</p>
+          <h3 className="font-semibold mb-2">Background Sync Configuration</h3>
+          <p className="mb-2">To enable automatic background syncing without user login, ensure the following environment variables are set:</p>
           <ul className="list-disc pl-5 space-y-1">
-            <li><b>Products</b>: SKU, Name, Category, Description, VariantName, Barcode, Price, Barcode1, Barcode2, Barcode3, SystemQty</li>
-            <li><b>Scans</b>: ID, SKU, BarcodeScanned, SystemQty, PhysicalQty, Variance, Timestamp, User, Status</li>
+            <li><b>SHEETS_API_KEY</b>: For reading products (Spreadsheet must be public).</li>
+            <li><b>SCRIPTS_URL</b>: Google Apps Script Web App URL for saving records (Full automation).</li>
+          </ul>
+          <p className="mt-3 font-semibold">Google Apps Script Code (for SCRIPTS_URL):</p>
+          <pre className="bg-gray-900 text-gray-100 p-3 rounded-xl text-[10px] mt-1 overflow-x-auto font-mono">
+{`function doPost(e) {
+  const data = JSON.parse(e.postData.contents);
+  const ss = SpreadsheetApp.openById(data.spreadsheetId);
+  const record = data.record;
+  const date = new Date(record.timestamp);
+  const sheetName = date.getFullYear() + "-" + 
+    String(date.getMonth() + 1).padStart(2, "0") + "-" + 
+    String(date.getDate()).padStart(2, "0");
+  
+  let sheet = ss.getSheetByName(sheetName);
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+    sheet.appendRow(['ID', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']);
+  }
+  
+  sheet.appendRow([
+    record.id, record.sku, record.variantName || "", record.barcodeScanned,
+    record.quantity, record.physicalQty, record.unitType === "Piece" ? "pcs" : "case",
+    record.variance, record.variancePercent + "%", record.timestamp, record.user, record.status
+  ]);
+  
+  return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
+}`}
+          </pre>
+          <p className="mt-3 font-semibold">Required Sheet Structure:</p>
+          <ul className="list-disc pl-5 space-y-1 mt-1">
+            <li><b>Products</b>: Category, Name, VariantName, Description, SKU, Barcode, Barcode1, Barcode2, Barcode3, Quantity</li>
+            <li><b>[YYYY-MM-DD]</b>: ID, SKU, Variant, BarcodeScanned, Quantity, PhysicalQty, Unit Type, Variance, Variance %, Timestamp, User, Status</li>
           </ul>
         </div>
       </div>

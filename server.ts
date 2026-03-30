@@ -126,27 +126,39 @@ async function startServer() {
   });
 
   // Middleware to check auth
-  const requireAuth = (req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const getAuthClient = (req: express.Request) => {
     const tokensCookie = req.cookies.google_tokens;
-    if (!tokensCookie) {
-      return res.status(401).json({ error: 'Not authenticated' });
+    if (tokensCookie) {
+      try {
+        const tokens = JSON.parse(tokensCookie);
+        const oauth2Client = getOAuthClient();
+        oauth2Client.setCredentials(tokens);
+        return oauth2Client;
+      } catch (e) {
+        console.error('Error parsing tokens cookie', e);
+      }
     }
-    try {
-      (req as any).tokens = JSON.parse(tokensCookie);
-      next();
-    } catch (e) {
-      res.status(401).json({ error: 'Invalid tokens' });
+
+    // Fallback to API Key (only supports read)
+    if (process.env.SHEETS_API_KEY) {
+      return process.env.SHEETS_API_KEY;
     }
+
+    return null;
   };
 
-  app.get('/api/sheets/products', requireAuth, async (req, res) => {
+  app.get('/api/sheets/products', async (req, res) => {
     const { spreadsheetId } = req.query;
     if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID required' });
 
+    const authClient = getAuthClient(req);
+    if (!authClient) {
+      return res.status(401).json({ error: 'No authentication configured. Please log in or provide a SHEETS_API_KEY.' });
+    }
+
     try {
-      const oauth2Client = getOAuthClient();
-      oauth2Client.setCredentials((req as any).tokens);
-      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
+      // If authClient is a string, it's treated as an API Key
+      const sheets = google.sheets({ version: 'v4', auth: authClient as any });
 
       const spreadsheet = await sheets.spreadsheets.get({
         spreadsheetId: spreadsheetId as string,
@@ -181,83 +193,101 @@ async function startServer() {
       res.json({ products });
     } catch (error) {
       console.error('Sheets API Error:', error);
-      res.status(500).json({ error: 'Failed to fetch products from Google Sheets' });
+      res.status(500).json({ error: 'Failed to fetch products from Google Sheets. Ensure the spreadsheet is public if using an API Key.' });
     }
   });
 
-  app.post('/api/sheets/records', requireAuth, async (req, res) => {
+  app.post('/api/sheets/records', async (req, res) => {
     const { spreadsheetId, record } = req.body;
     if (!spreadsheetId || !record) return res.status(400).json({ error: 'Missing parameters' });
 
-    try {
-      const oauth2Client = getOAuthClient();
-      oauth2Client.setCredentials((req as any).tokens);
-      const sheets = google.sheets({ version: 'v4', auth: oauth2Client });
-
-      // Create a sheet name based on the date of the scan (YYYY-MM-DD)
-      const scanDate = new Date(record.timestamp);
-      // Format as YYYY-MM-DD using local time or UTC. Let's use the local date string format.
-      const sheetName = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
-
-      // Check if the date-specific sheet exists
-      const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-      const sheetExists = spreadsheet.data.sheets?.some(s => s.properties?.title === sheetName);
-
-      if (!sheetExists) {
-        // Create the new date sheet
-        await sheets.spreadsheets.batchUpdate({
-          spreadsheetId,
-          requestBody: {
-            requests: [{
-              addSheet: {
-                properties: { title: sheetName }
-              }
-            }]
-          }
+    // Try to use Apps Script Web App if configured
+    if (process.env.SCRIPTS_URL) {
+      try {
+        const response = await fetch(process.env.SCRIPTS_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ spreadsheetId, record })
         });
+        if (response.ok) {
+          return res.json({ success: true });
+        }
+        console.error('Apps Script Error:', await response.text());
+      } catch (error) {
+        console.error('Failed to send to Apps Script:', error);
+      }
+    }
 
-        // Add headers to the new sheet
+    // Fallback to OAuth if logged in
+    const authClient = getAuthClient(req);
+    if (authClient && typeof authClient !== 'string') {
+      try {
+        const sheets = google.sheets({ version: 'v4', auth: authClient as any });
+
+        // Create a sheet name based on the date of the scan (YYYY-MM-DD)
+        const scanDate = new Date(record.timestamp);
+        const sheetName = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
+
+        // Check if the date-specific sheet exists
+        const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+        const sheetExists = spreadsheet.data.sheets?.some(s => s.properties?.title === sheetName);
+
+        if (!sheetExists) {
+          await sheets.spreadsheets.batchUpdate({
+            spreadsheetId,
+            requestBody: {
+              requests: [{
+                addSheet: {
+                  properties: { title: sheetName }
+                }
+              }]
+            }
+          });
+
+          await sheets.spreadsheets.values.append({
+            spreadsheetId,
+            range: `'${sheetName}'!A1:L1`,
+            valueInputOption: 'USER_ENTERED',
+            requestBody: {
+              values: [
+                ['ID', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']
+              ]
+            }
+          });
+        }
+
         await sheets.spreadsheets.values.append({
           spreadsheetId,
-          range: `'${sheetName}'!A1:L1`,
+          range: `'${sheetName}'!A:L`,
           valueInputOption: 'USER_ENTERED',
           requestBody: {
             values: [
-              ['ID', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']
+              [
+                record.id,
+                record.sku,
+                record.variantName || '',
+                record.barcodeScanned,
+                record.quantity,
+                record.physicalQty,
+                record.unitType === 'Piece' ? 'pcs' : 'case',
+                record.variance,
+                record.variancePercent !== undefined ? `${record.variancePercent}%` : '',
+                record.timestamp,
+                record.user,
+                record.status
+              ]
             ]
           }
         });
+
+        return res.json({ success: true });
+      } catch (error) {
+        console.error('Sheets API Error:', error);
+        return res.status(500).json({ error: 'Failed to save record to Google Sheets' });
       }
-
-      await sheets.spreadsheets.values.append({
-        spreadsheetId,
-        range: `'${sheetName}'!A:L`,
-        valueInputOption: 'USER_ENTERED',
-        requestBody: {
-          values: [
-            [
-              record.id,
-              record.sku,
-              record.variantName || '',
-              record.barcodeScanned,
-              record.quantity,
-              record.physicalQty,
-              record.unitType === 'Piece' ? 'pcs' : 'case',
-              record.variance,
-              record.variancePercent !== undefined ? `${record.variancePercent}%` : '',
-              record.timestamp,
-              record.user,
-              record.status
-            ]
-          ]
-        }
-      });
-
-      res.json({ success: true });
-    } catch (error) {
-      console.error('Sheets API Error:', error);
-      res.status(500).json({ error: 'Failed to save record to Google Sheets' });
     }
+
+    res.status(401).json({ error: 'No authentication configured for writing. Please log in or set up SCRIPTS_URL.' });
   });
 
   // Vite middleware for development
