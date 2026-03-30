@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList } from 'lucide-react';
+import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, RefreshCw } from 'lucide-react';
 import { Scanner } from '../components/Scanner';
 import { Product, BarcodeAlias, StocktakeRecord } from '../types';
 
@@ -9,11 +9,14 @@ interface Props {
   addProduct: (p: Product) => void;
   addAlias: (a: BarcodeAlias) => void;
   addRecord: (r: StocktakeRecord) => void;
+  onSync?: () => void;
+  isSyncing?: boolean;
+  userEmail: string | null;
 }
 
 type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'ERROR' | 'SUCCESS';
 
-export function StocktakeView({ products, aliases, addProduct, addAlias, addRecord }: Props) {
+export function StocktakeView({ products, aliases, addProduct, addAlias, addRecord, onSync, isSyncing, userEmail }: Props) {
   const [step, setStep] = useState<Step>('LANDING');
   const [barcode, setBarcode] = useState('');
   const [product, setProduct] = useState<Product | null>(null);
@@ -125,7 +128,11 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
     const record: StocktakeRecord = {
       id: crypto.randomUUID(),
       sku: product.sku,
-      variantName: product.variantName,
+      category: product.category,
+      productName: product.name,
+      variant: product.variantName,
+      description: product.description,
+      barcode: product.barcode,
       barcodeScanned: barcode,
       quantity: product.quantity,
       physicalQty: qty,
@@ -133,7 +140,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       variance: variance,
       variancePercent: variancePercent,
       timestamp: new Date().toISOString(),
-      user: 'Current User', // Mock user
+      user: userEmail || 'Anonymous',
       status: 'Pending',
     };
 
@@ -190,13 +197,26 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
             <p className="text-gray-500">Scan a barcode to begin counting</p>
           </div>
 
-          <button
-            onClick={() => setShowScanner(true)}
-            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg shadow-blue-200 transition-all active:scale-95"
-          >
-            <Camera size={24} />
-            <span>Open Camera Scanner</span>
-          </button>
+          <div className="w-full space-y-3">
+            <button
+              onClick={() => setShowScanner(true)}
+              className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg shadow-blue-200 transition-all active:scale-95"
+            >
+              <Camera size={24} />
+              <span>Open Camera Scanner</span>
+            </button>
+
+            {onSync && (
+              <button
+                onClick={onSync}
+                disabled={isSyncing}
+                className="w-full py-3 bg-white border-2 border-blue-100 text-blue-600 rounded-2xl font-semibold text-sm flex items-center justify-center space-x-2 transition-all active:scale-95 disabled:opacity-50"
+              >
+                <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} />
+                <span>{isSyncing ? 'Syncing Products...' : 'Sync Products Now'}</span>
+              </button>
+            )}
+          </div>
 
           <div className="w-full relative">
             <div className="absolute inset-0 flex items-center">

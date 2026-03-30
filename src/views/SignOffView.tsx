@@ -116,9 +116,9 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                     <div className="text-xs text-gray-500 font-mono mt-1">{record.sku}</div>
                   </td>
                   <td className="p-4 text-gray-600">
-                    {record.variantName ? (
+                    {record.variant ? (
                       <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                        {record.variantName}
+                        {record.variant}
                       </span>
                     ) : (
                       <span className="text-gray-400 text-xs">-</span>

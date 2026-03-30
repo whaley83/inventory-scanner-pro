@@ -19,7 +19,11 @@ export interface BarcodeAlias {
 export interface StocktakeRecord {
   id: string;
   sku: string;
-  variantName?: string;
+  category?: string;
+  productName?: string;
+  variant?: string;
+  description?: string;
+  barcode?: string;
   barcodeScanned: string;
   quantity: number;
   physicalQty: number;

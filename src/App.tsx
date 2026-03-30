@@ -78,6 +78,9 @@ export default function App() {
             addProduct={inventory.addProduct}
             addAlias={inventory.addAlias}
             addRecord={inventory.addRecord}
+            onSync={inventory.sync}
+            isSyncing={inventory.isSyncing}
+            userEmail={userEmail}
           />
         )}
         {activeTab === 'PRODUCTS' && (

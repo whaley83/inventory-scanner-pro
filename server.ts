@@ -152,32 +152,70 @@ async function startServer() {
     if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID required' });
 
     const authClient = getAuthClient(req);
-    if (!authClient) {
-      return res.status(401).json({ error: 'No authentication configured. Please log in or provide a SHEETS_API_KEY.' });
+    
+    // If we have an auth client (OAuth or API Key), use the official API
+    if (authClient) {
+      try {
+        const sheets = google.sheets({ version: 'v4', auth: authClient as any });
+
+        const spreadsheet = await sheets.spreadsheets.get({
+          spreadsheetId: spreadsheetId as string,
+        });
+
+        const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
+        const targetSheetName = sheetNames.includes('Products') ? 'Products' : sheetNames[0];
+
+        if (!targetSheetName) {
+          throw new Error('No sheets found in the document');
+        }
+
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId: spreadsheetId as string,
+          range: `'${targetSheetName}'!A2:J`, // Adjust based on columns
+        });
+
+        const rows = response.data.values || [];
+        const products = rows.map(row => ({
+          category: row[0] || '',
+          name: row[1] || '',
+          variantName: row[2] || '',
+          description: row[3] || '',
+          sku: row[4] || '',
+          barcode: row[5] || '',
+          barcode1: row[6] || '',
+          barcode2: row[7] || '',
+          barcode3: row[8] || '',
+          quantity: parseInt(row[9], 10) || 0,
+        }));
+
+        return res.json({ products });
+      } catch (error) {
+        console.error('Sheets API Error:', error);
+        // Fallback to public fetch if official API fails
+      }
     }
 
+    // Fallback: Try to fetch public CSV if no auth or official API failed
     try {
-      // If authClient is a string, it's treated as an API Key
-      const sheets = google.sheets({ version: 'v4', auth: authClient as any });
-
-      const spreadsheet = await sheets.spreadsheets.get({
-        spreadsheetId: spreadsheetId as string,
-      });
-
-      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
-      const targetSheetName = sheetNames.includes('Products') ? 'Products' : sheetNames[0];
-
-      if (!targetSheetName) {
-        throw new Error('No sheets found in the document');
+      // We try to fetch the 'Products' sheet or the first sheet as CSV
+      // Note: This requires the spreadsheet to be "Published to the web" or "Anyone with the link can view"
+      const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=Products`;
+      const response = await fetch(csvUrl);
+      
+      if (!response.ok) {
+        throw new Error('Failed to fetch public CSV');
       }
 
-      const response = await sheets.spreadsheets.values.get({
-        spreadsheetId: spreadsheetId as string,
-        range: `'${targetSheetName}'!A2:J`, // Adjust based on columns
+      const csvText = await response.text();
+      // Simple CSV parser (assuming no complex quoting for now, or use a library if needed)
+      // For this app, we'll do a basic split
+      const rows = csvText.split('\n').map(line => {
+        // Handle basic quoting: "val1","val2"
+        return line.split(',').map(cell => cell.replace(/^"(.*)"$/, '$1'));
       });
 
-      const rows = response.data.values || [];
-      const products = rows.map(row => ({
+      // Skip header row
+      const products = rows.slice(1).filter(row => row.length >= 6).map(row => ({
         category: row[0] || '',
         name: row[1] || '',
         variantName: row[2] || '',
@@ -192,8 +230,8 @@ async function startServer() {
 
       res.json({ products });
     } catch (error) {
-      console.error('Sheets API Error:', error);
-      res.status(500).json({ error: 'Failed to fetch products from Google Sheets. Ensure the spreadsheet is public if using an API Key.' });
+      console.error('Public Sync Error:', error);
+      res.status(401).json({ error: 'No authentication configured and public sync failed. Please log in or provide a SHEETS_API_KEY.' });
     }
   });
 
@@ -204,10 +242,27 @@ async function startServer() {
     // Try to use Apps Script Web App if configured
     if (process.env.SCRIPTS_URL) {
       try {
+        const payload = {
+          spreadsheetId,
+          category: record.category,
+          productName: record.productName,
+          variant: record.variant,
+          description: record.description,
+          sku: record.sku,
+          barcode: record.barcode,
+          quantity: record.physicalQty, // The physical quantity scanned
+          originalQuantity: record.quantity, // The stock level before the edit
+          unitType: record.unitType,
+          variance: record.variance,
+          timestamp: record.timestamp,
+          user: record.user,
+          status: record.status
+        };
+
         const response = await fetch(process.env.SCRIPTS_URL, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ spreadsheetId, record })
+          body: JSON.stringify(payload)
         });
         if (response.ok) {
           return res.json({ success: true });

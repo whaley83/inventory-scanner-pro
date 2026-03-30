@@ -110,7 +110,7 @@ export function SettingsView() {
             <div className="space-y-4">
               <div className="flex items-center gap-3 text-green-600 bg-green-50 p-3 rounded-xl border border-green-100">
                 <CheckCircle2 size={20} />
-                <span className="font-medium text-sm">Connected to Google</span>
+                <span className="font-medium text-sm">Connected to Google (Admin)</span>
               </div>
               <button
                 onClick={handleLogout}
@@ -122,16 +122,16 @@ export function SettingsView() {
             </div>
           ) : (
             <div className="space-y-4">
-              <div className="flex items-start gap-3 text-amber-600 bg-amber-50 p-3 rounded-xl border border-amber-100 text-sm">
-                <AlertCircle size={20} className="shrink-0 mt-0.5" />
-                <p>You need to connect your Google account to sync products and save stocktake records.</p>
+              <div className="flex items-start gap-3 text-blue-600 bg-blue-50 p-3 rounded-xl border border-blue-100 text-sm">
+                <Database size={20} className="shrink-0 mt-0.5" />
+                <p>Connecting a Google account is optional for admins to manage sheets directly. Staff can sync and save using the Spreadsheet ID below.</p>
               </div>
               <button
                 onClick={handleLogin}
                 className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-medium flex items-center justify-center gap-2 transition-colors shadow-sm"
               >
                 <LogIn size={18} />
-                <span>Connect with Google</span>
+                <span>Connect with Google (Admin)</span>
               </button>
             </div>
           )}
@@ -191,8 +191,7 @@ export function SettingsView() {
 {`function doPost(e) {
   const data = JSON.parse(e.postData.contents);
   const ss = SpreadsheetApp.openById(data.spreadsheetId);
-  const record = data.record;
-  const date = new Date(record.timestamp);
+  const date = new Date(data.timestamp);
   const sheetName = date.getFullYear() + "-" + 
     String(date.getMonth() + 1).padStart(2, "0") + "-" + 
     String(date.getDate()).padStart(2, "0");
@@ -200,13 +199,14 @@ export function SettingsView() {
   let sheet = ss.getSheetByName(sheetName);
   if (!sheet) {
     sheet = ss.insertSheet(sheetName);
-    sheet.appendRow(['ID', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']);
+    sheet.appendRow(['Category', 'Product Name', 'Variant', 'Description', 'SKU', 'Barcode', 'Original Qty', 'Physical Qty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']);
   }
   
   sheet.appendRow([
-    record.id, record.sku, record.variantName || "", record.barcodeScanned,
-    record.quantity, record.physicalQty, record.unitType === "Piece" ? "pcs" : "case",
-    record.variance, record.variancePercent + "%", record.timestamp, record.user, record.status
+    data.category, data.productName, data.variant || "", data.description || "",
+    data.sku, data.barcode, data.originalQuantity, data.quantity, data.unitType === "Piece" ? "pcs" : "case",
+    data.variance, data.originalQuantity === 0 ? (data.variance > 0 ? "100%" : "0%") : (Math.round((data.variance / data.originalQuantity) * 1000) / 10) + "%",
+    data.timestamp, data.user, data.status
   ]);
   
   return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
@@ -215,7 +215,7 @@ export function SettingsView() {
           <p className="mt-3 font-semibold">Required Sheet Structure:</p>
           <ul className="list-disc pl-5 space-y-1 mt-1">
             <li><b>Products</b>: Category, Name, VariantName, Description, SKU, Barcode, Barcode1, Barcode2, Barcode3, Quantity</li>
-            <li><b>[YYYY-MM-DD]</b>: ID, SKU, Variant, BarcodeScanned, Quantity, PhysicalQty, Unit Type, Variance, Variance %, Timestamp, User, Status</li>
+            <li><b>[YYYY-MM-DD]</b>: Category, Product Name, Variant, Description, SKU, Barcode, Original Qty, Physical Qty, Unit Type, Variance, Variance %, Timestamp, User, Status</li>
           </ul>
         </div>
       </div>
