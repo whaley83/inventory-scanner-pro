@@ -1,0 +1,7 @@
+{
+  "name": "Inventory Scanner Pro",
+  "description": "Mobile barcode scanner app with barcode aliasing, real-time lookup, and variance approval.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
