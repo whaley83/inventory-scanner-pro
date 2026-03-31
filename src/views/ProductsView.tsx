@@ -26,16 +26,6 @@ export function ProductsView({ products, aliases, onSync, isSyncing }: Props) {
       <div className="mb-6 max-w-4xl mx-auto w-full">
         <div className="flex justify-between items-center mb-4">
           <h1 className="text-2xl font-bold text-gray-800">Product List Information</h1>
-          {onSync && (
-            <button
-              onClick={onSync}
-              disabled={isSyncing}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
-            >
-              <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} />
-              <span>{isSyncing ? 'Syncing...' : 'Sync Now'}</span>
-            </button>
-          )}
         </div>
         <div className="relative">
           <input
@@ -63,7 +53,6 @@ export function ProductsView({ products, aliases, onSync, isSyncing }: Props) {
                 <th className="p-3 font-medium whitespace-nowrap">Barcode 1</th>
                 <th className="p-3 font-medium whitespace-nowrap">Barcode 2</th>
                 <th className="p-3 font-medium whitespace-nowrap">Barcode 3</th>
-                <th className="p-3 font-medium whitespace-nowrap text-right">Quantity</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -78,7 +67,6 @@ export function ProductsView({ products, aliases, onSync, isSyncing }: Props) {
                   <td className="p-3 font-mono text-xs text-gray-500">{product.barcode1}</td>
                   <td className="p-3 font-mono text-xs text-gray-500">{product.barcode2}</td>
                   <td className="p-3 font-mono text-xs text-gray-500">{product.barcode3}</td>
-                  <td className="p-3 font-semibold text-right text-gray-900">{product.quantity}</td>
                 </tr>
               ))}
             </tbody>

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { X, Camera, Type, AlertCircle } from 'lucide-react';
-import Tesseract from 'tesseract.js';
+import { X, Camera, Type, AlertCircle, Loader2 } from 'lucide-react';
+import { GoogleGenAI } from "@google/genai";
+import { toast } from 'sonner';
 
 interface ScannerProps {
   onScan: (barcode: string) => void;
@@ -115,19 +116,49 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
       canvas.height = video.videoHeight;
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-      const imageDataUrl = canvas.toDataURL('image/png');
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      const base64Data = imageDataUrl.split(',')[1];
 
       try {
-        const result = await Tesseract.recognize(imageDataUrl, 'eng');
-        const cleanText = result.data.text.replace(/\s+/g, ' ').trim();
-        if (cleanText) {
-           onTextScan(cleanText);
+        const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.GEMINI_API_KEY });
+        const response = await ai.models.generateContent({
+          model: "gemini-3-flash-preview",
+          contents: {
+            parts: [
+              {
+                text: `You are a strictly evidentiary product scanner. 
+                Analyze the image for a clear product label, barcode, or identifiable text (SKU, Product Name).
+                
+                RULES:
+                1. If the image does not contain a clear product label, barcode, or identifiable text, return exactly: {"error": "no_product_detected"}.
+                2. Do NOT 'guess' based on background objects, people, or context.
+                3. Only return product data if a SKU, Barcode, or Product Name is clearly legible.
+                4. If found, return the most prominent text found on the label (e.g., the SKU or Product Name).
+                
+                Response format: Return ONLY the text found or the error JSON.`,
+              },
+              {
+                inlineData: {
+                  mimeType: "image/jpeg",
+                  data: base64Data,
+                },
+              },
+            ],
+          },
+        });
+
+        const resultText = response.text?.trim() || "";
+        
+        if (resultText.includes('no_product_detected')) {
+          toast.error("No product detected. Please point the camera at a label");
+        } else if (resultText) {
+          onTextScan(resultText);
         } else {
-           alert("No text found. Please try again.");
+          toast.error("No text found. Please try again.");
         }
       } catch (error) {
-        console.error("OCR Error:", error);
-        alert("Failed to read text. Please try again.");
+        console.error("Vision Error:", error);
+        toast.error("Failed to read product details. Please try again.");
       } finally {
         setIsProcessingText(false);
       }
@@ -195,7 +226,17 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
                       disabled={isProcessingText}
                       className="bg-blue-600 text-white px-8 py-4 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
                     >
-                      {isProcessingText ? 'Reading...' : 'Capture Text'}
+                      {isProcessingText ? (
+                        <>
+                          <Loader2 className="animate-spin" size={20} />
+                          <span>Analyzing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Camera size={20} />
+                          <span>Capture Product</span>
+                        </>
+                      )}
                     </button>
                   </div>
                   

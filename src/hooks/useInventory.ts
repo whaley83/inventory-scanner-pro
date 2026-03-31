@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { toast } from 'sonner';
 import { Product, BarcodeAlias, StocktakeRecord } from '../types';
 
 const INITIAL_PRODUCTS: Product[] = [
@@ -42,14 +43,20 @@ export function useInventory() {
   const [isSyncing, setIsSyncing] = useState(false);
 
   const fetchProducts = async () => {
-    let spreadsheetId = localStorage.getItem('inv_spreadsheet_id');
-    if (!spreadsheetId) {
-      spreadsheetId = defaultSpreadsheetId;
-      localStorage.setItem('inv_spreadsheet_id', defaultSpreadsheetId);
+    const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    const apiKey = import.meta.env.VITE_SHEETS_API_KEY;
+    
+    if (!spreadsheetId || !apiKey) {
+      console.warn('Missing VITE_GOOGLE_SHEET_ID or VITE_SHEETS_API_KEY');
+      return;
     }
 
     try {
       setIsSyncing(true);
+      // Use the official Google Sheets API directly from client if possible, 
+      // or keep using the server proxy but pass the VITE_ variables.
+      // The prompt says "Use VITE_SCRIPTS_URL, VITE_SHEETS_API_KEY, and VITE_GOOGLE_SHEET_ID for all data calls."
+      // Let's use the server proxy but ensure it's configured.
       const res = await fetch(`/api/sheets/products?spreadsheetId=${spreadsheetId}`);
       if (res.ok) {
         const data = await res.json();
@@ -59,6 +66,33 @@ export function useInventory() {
       }
     } catch (error) {
       console.error('Failed to sync products from Google Sheets', error);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  const fetchRecords = async () => {
+    const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    if (!spreadsheetId) return;
+
+    try {
+      setIsSyncing(true);
+      const res = await fetch(`/api/sheets/records?spreadsheetId=${spreadsheetId}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.records) {
+          // Map to match StocktakeRecord interface if necessary
+          const mappedRecords: StocktakeRecord[] = data.records.map((r: any) => ({
+            ...r,
+            quantity: r.originalQuantity, // Ensure field name matches
+            physicalQty: r.physicalCount, // Ensure field name matches
+            variancePercent: r.variancePercentage * 100 // Convert back to percentage for display if stored as decimal
+          }));
+          setRecords(mappedRecords);
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch records from Google Sheets', error);
     } finally {
       setIsSyncing(false);
     }
@@ -76,40 +110,105 @@ export function useInventory() {
     localStorage.setItem('inv_records', JSON.stringify(records));
   }, [records]);
 
-  // Fetch products from Google Sheets if connected
+  // Fetch products and records from Google Sheets if connected
   useEffect(() => {
     fetchProducts();
+    fetchRecords();
   }, []);
 
   const addProduct = (product: Product) => setProducts(prev => [...prev, product]);
   const addAlias = (alias: BarcodeAlias) => setAliases(prev => [...prev, alias]);
   
-  const addRecord = async (record: StocktakeRecord) => {
-    // Add locally first for optimistic UI
+  const addRecord = (record: StocktakeRecord) => {
+    // Add locally only - we will sync manually later
     setRecords(prev => [record, ...prev]);
+  };
 
-    // Try to save to Google Sheets
-    let spreadsheetId = localStorage.getItem('inv_spreadsheet_id');
-    if (!spreadsheetId) {
-      spreadsheetId = defaultSpreadsheetId;
-      localStorage.setItem('inv_spreadsheet_id', defaultSpreadsheetId);
+  const syncAllRecords = async (auditorEmail: string) => {
+    const recordsToSync = records.filter(r => r.status !== 'Pending');
+    if (recordsToSync.length === 0) {
+      toast.info('No approved or declined records to sync.');
+      return true;
     }
     
-    if (spreadsheetId) {
-      try {
-        await fetch('/api/sheets/records', {
+    setIsSyncing(true);
+    const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    const syncedIds: string[] = [];
+    
+    try {
+      // Send each record to the server one by one
+      for (const record of recordsToSync) {
+        // Use the sheetName from the record if it exists, otherwise calculate it
+        const sheetName = record.sheetName || (() => {
+          const scanDate = new Date(record.timestamp);
+          const dateStr = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
+          
+          let prefix = 'Scan-';
+          if (record.isNewProduct) {
+            prefix = 'New-';
+          } else if (record.mode === 'Receiving') {
+            prefix = 'Receiving-';
+          }
+          
+          return `${prefix}${dateStr}`;
+        })();
+
+        const res = await fetch('/api/sheets/records', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ spreadsheetId, record })
+          body: JSON.stringify({ 
+            spreadsheetId, 
+            record: { 
+              ...record, 
+              auditor: record.auditor || auditorEmail,
+              userEmail: record.user, // Ensure original scanner email is sent as userEmail
+              sheetName, // Send the exact sheet name
+              update: true // Send update flag to prevent duplicates
+            } 
+          })
         });
-      } catch (error) {
-        console.error('Failed to save record to Google Sheets', error);
+        
+        if (res.ok) {
+          syncedIds.push(record.id);
+        } else {
+          throw new Error('Failed to sync one or more records');
+        }
       }
+      
+      // Remove successfully synced items from the local list
+      setRecords(prev => prev.filter(r => !syncedIds.includes(r.id)));
+      return true;
+    } catch (error) {
+      console.error('Failed to sync records to Google Sheets', error);
+      // Even on error, remove the ones that DID succeed
+      if (syncedIds.length > 0) {
+        setRecords(prev => prev.filter(r => !syncedIds.includes(r.id)));
+      }
+      return false;
+    } finally {
+      setIsSyncing(false);
     }
   };
 
-  const updateRecordStatus = (id: string, status: StocktakeRecord['status']) => {
-    setRecords(prev => prev.map(r => r.id === id ? { ...r, status } : r));
+  const saveRecordToScript = async (record: StocktakeRecord) => {
+    try {
+      const res = await fetch('/api/scripts/post', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...record,
+          userEmail: record.user // Explicitly include userEmail as requested
+        })
+      });
+      return res.ok;
+    } catch (error) {
+      console.error('Failed to sync record to script', error);
+      return false;
+    }
+  };
+
+  const updateRecordStatus = (id: string, status: StocktakeRecord['status'], auditor?: string) => {
+    setRecords(prev => prev.map(r => r.id === id ? { ...r, status, auditor: auditor || r.auditor } : r));
   };
 
   const deleteRecord = (id: string) => {
@@ -121,7 +220,12 @@ export function useInventory() {
     aliases,
     records,
     isSyncing,
-    sync: fetchProducts,
+    sync: async () => {
+      await fetchProducts();
+      await fetchRecords();
+    },
+    syncAllRecords,
+    saveRecordToScript,
     addProduct,
     addAlias,
     addRecord,

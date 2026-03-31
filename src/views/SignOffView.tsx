@@ -1,16 +1,21 @@
 import React, { useState } from 'react';
 import { StocktakeRecord, Product } from '../types';
-import { Check, X, FileSpreadsheet, Trash2, AlertTriangle } from 'lucide-react';
+import { Check, X, FileSpreadsheet, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { toast } from 'sonner';
 
 interface Props {
   records: StocktakeRecord[];
   products: Product[];
-  updateRecordStatus: (id: string, status: StocktakeRecord['status']) => void;
+  updateRecordStatus: (id: string, status: StocktakeRecord['status'], auditor?: string) => void;
   deleteRecord: (id: string) => void;
+  onSyncAll?: () => Promise<boolean>;
+  onSyncProducts?: () => void;
+  isSyncing?: boolean;
+  userEmail: string | null;
 }
 
-export function SignOffView({ records, products, updateRecordStatus, deleteRecord }: Props) {
-  const [filter, setFilter] = useState<'ALL' | 'VARIANCE' | 'PENDING'>('VARIANCE');
+export function SignOffView({ records, products, updateRecordStatus, deleteRecord, onSyncAll, onSyncProducts, isSyncing, userEmail }: Props) {
+  const [filter, setFilter] = useState<'ALL' | 'VARIANCE' | 'PENDING'>('PENDING');
   const [recordToDelete, setRecordToDelete] = useState<string | null>(null);
 
   const filteredRecords = records.filter(r => {
@@ -24,8 +29,10 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
   };
 
   const formatDate = (isoString: string) => {
+    if (!isoString) return 'Just Now';
     const d = new Date(isoString);
-    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ' ' + d.toLocaleDateString();
+    if (isNaN(d.getTime())) return 'Just Now';
+    return d.toLocaleString();
   };
 
   const confirmDelete = () => {
@@ -72,25 +79,39 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
           <p className="text-gray-500 text-sm">Review and approve stocktake variances</p>
         </div>
         
-        <div className="flex bg-gray-100 p-1 rounded-lg self-start">
-          <button
-            onClick={() => setFilter('VARIANCE')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'VARIANCE' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            Has Variance
-          </button>
-          <button
-            onClick={() => setFilter('PENDING')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'PENDING' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            Pending
-          </button>
-          <button
-            onClick={() => setFilter('ALL')}
-            className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'ALL' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-          >
-            All Scans
-          </button>
+        <div className="flex items-center gap-2">
+          {onSyncProducts && (
+            <button
+              onClick={onSyncProducts}
+              disabled={isSyncing}
+              className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors border border-blue-100 flex items-center gap-2 text-sm font-medium"
+              title="Refresh Data"
+            >
+              <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} />
+              <span className="hidden sm:inline">Refresh Data</span>
+            </button>
+          )}
+          
+          <div className="flex bg-gray-100 p-1 rounded-lg">
+            <button
+              onClick={() => setFilter('VARIANCE')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'VARIANCE' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              Has Variance
+            </button>
+            <button
+              onClick={() => setFilter('PENDING')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'PENDING' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              Pending
+            </button>
+            <button
+              onClick={() => setFilter('ALL')}
+              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'ALL' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              All Scans
+            </button>
+          </div>
         </div>
       </div>
 
@@ -112,7 +133,17 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
               {filteredRecords.map((record, index) => (
                 <tr key={`${record.id}-${index}`} className="hover:bg-gray-50 transition-colors">
                   <td className="p-4">
-                    <div className="font-medium text-gray-900">{getProductName(record.sku)}</div>
+                    <div className="flex items-center gap-2">
+                      <div className="font-medium text-gray-900">{record.productName || getProductName(record.sku)}</div>
+                      {record.isNewProduct && (
+                        <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">NEW</span>
+                      )}
+                      {record.mode === 'Receiving' ? (
+                        <span className="bg-green-100 text-green-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">REC</span>
+                      ) : (
+                        <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">SCAN</span>
+                      )}
+                    </div>
                     <div className="text-xs text-gray-500 font-mono mt-1">{record.sku}</div>
                   </td>
                   <td className="p-4 text-gray-600">
@@ -124,44 +155,57 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                       <span className="text-gray-400 text-xs">-</span>
                     )}
                   </td>
-                  <td className="p-4 text-gray-600">{record.quantity}</td>
+                  <td className="p-4 text-gray-600">
+                    {record.mode === 'Receiving' ? (
+                      <span className="text-gray-400 text-xs">-</span>
+                    ) : (
+                      record.quantity
+                    )}
+                  </td>
                   <td className="p-4 font-semibold">{record.physicalQty}</td>
                   <td className="p-4">
-                    <div className="flex flex-col gap-1">
-                      <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                        record.variance === 0 ? 'bg-gray-100 text-gray-800' :
-                        record.variance > 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
-                      }`}>
-                        {record.variance > 0 ? '+' : ''}{record.variance}
-                      </span>
-                      {record.variancePercent !== undefined && record.variance !== 0 && (
-                        <span className={`text-xs font-medium ${
-                          record.variancePercent > 0 ? 'text-green-600' : 'text-red-600'
+                    {record.mode === 'Receiving' ? (
+                      <span className="text-gray-400 text-xs">-</span>
+                    ) : (
+                      <div className="flex flex-col gap-1">
+                        <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                          record.variance === 0 ? 'bg-gray-100 text-gray-800' :
+                          record.variance > 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                         }`}>
-                          {record.variancePercent > 0 ? '+' : ''}{record.variancePercent}%
+                          {record.variance > 0 ? '+' : ''}{record.variance}
                         </span>
-                      )}
-                    </div>
+                        {record.variancePercent !== undefined && record.variance !== 0 && (
+                          <span className={`text-xs font-medium ${
+                            record.variancePercent > 0 ? 'text-green-600' : 'text-red-600'
+                          }`}>
+                            {record.variancePercent > 0 ? '+' : ''}{record.variancePercent}%
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td className="p-4 text-sm text-gray-500">
                     <div>{formatDate(record.timestamp)}</div>
-                    <div className="text-xs">{record.user}</div>
+                    <div className="text-xs flex items-center gap-1 mt-1">
+                      <span className="text-gray-400 font-medium uppercase text-[9px]">Scanner:</span>
+                      <span className="truncate max-w-[120px]">{record.user || userEmail || 'Unknown User'}</span>
+                    </div>
                   </td>
                   <td className="p-4 text-right">
                     <div className="flex justify-end items-center space-x-2">
                       {record.status === 'Pending' ? (
                         <>
                           <button
-                            onClick={() => updateRecordStatus(record.id, 'Approved')}
+                            onClick={() => updateRecordStatus(record.id, 'Approved', userEmail || undefined)}
                             className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors border border-green-200"
                             title="Approve"
                           >
                             <Check size={18} />
                           </button>
                           <button
-                            onClick={() => updateRecordStatus(record.id, 'Rejected')}
+                            onClick={() => updateRecordStatus(record.id, 'Declined', userEmail || undefined)}
                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200"
-                            title="Reject"
+                            title="Decline"
                           >
                             <X size={18} />
                           </button>
@@ -195,6 +239,28 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
           )}
         </div>
       </div>
+
+      {records.length > 0 && (
+        <div className="mt-6">
+          <button
+            onClick={async () => {
+              if (onSyncAll) {
+                const success = await onSyncAll();
+                if (success) {
+                  toast.success('Record Updated in Google Sheets');
+                } else {
+                  toast.error('Failed to update records in Google Sheets');
+                }
+              }
+            }}
+            disabled={isSyncing}
+            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-bold text-lg flex items-center justify-center gap-3 shadow-lg shadow-blue-100 transition-all active:scale-95 disabled:opacity-50"
+          >
+            <RefreshCw size={24} className={isSyncing ? 'animate-spin' : ''} />
+            <span>{isSyncing ? 'Syncing to Google Sheets...' : 'Sync to Google Sheet'}</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

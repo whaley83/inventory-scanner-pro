@@ -1,7 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, RefreshCw } from 'lucide-react';
+import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck } from 'lucide-react';
+import { toast } from 'sonner';
 import { Scanner } from '../components/Scanner';
-import { Product, BarcodeAlias, StocktakeRecord } from '../types';
+import { Product, BarcodeAlias, StocktakeRecord, AccessLevel } from '../types';
+import { GoogleGenAI, Type } from "@google/genai";
 
 interface Props {
   products: Product[];
@@ -9,19 +11,29 @@ interface Props {
   addProduct: (p: Product) => void;
   addAlias: (a: BarcodeAlias) => void;
   addRecord: (r: StocktakeRecord) => void;
-  onSync?: () => void;
-  isSyncing?: boolean;
+  saveRecordToScript: (r: StocktakeRecord) => Promise<boolean>;
+  isSyncing: boolean;
   userEmail: string | null;
+  accessLevel: AccessLevel;
 }
 
-type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'ERROR' | 'SUCCESS';
+type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'ERROR' | 'SUCCESS' | 'COMPLETED';
 
-export function StocktakeView({ products, aliases, addProduct, addAlias, addRecord, onSync, isSyncing, userEmail }: Props) {
-  const [step, setStep] = useState<Step>('LANDING');
+export function StocktakeView({ products, aliases, addProduct, addAlias, addRecord, saveRecordToScript, isSyncing, userEmail, accessLevel }: Props) {
+  const [step, setStep] = useState<Step>(() => {
+    const isCompleted = localStorage.getItem('inv_stocktake_completed') === 'true';
+    return isCompleted ? 'COMPLETED' : 'LANDING';
+  });
   const [barcode, setBarcode] = useState('');
   const [product, setProduct] = useState<Product | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [physicalQty, setPhysicalQty] = useState('');
+  const [mode, setMode] = useState<'Stocktake' | 'Receiving'>('Stocktake');
+  const [isNewProduct, setIsNewProduct] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [piecesPerBox, setPiecesPerBox] = useState('1');
+  const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
+  const [isSaving, setIsSaving] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -33,6 +45,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
   }, [step, showScanner]);
 
   const handleScan = (scannedBarcode: string) => {
+    if (step === 'COMPLETED') return;
     if (!scannedBarcode.trim()) return;
     
     setBarcode(scannedBarcode);
@@ -67,6 +80,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
   };
 
   const handleTextScan = (scannedText: string) => {
+    if (step === 'COMPLETED') return;
     if (!scannedText.trim()) return;
     
     setShowScanner(false);
@@ -85,23 +99,77 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
     if (prodByText) {
       setBarcode(prodByText.barcode); // Use primary barcode for record keeping
       setProduct(prodByText);
+      setIsNewProduct(false);
       setStep('COUNT');
       return;
     }
     
     // If no match found in text
-    setBarcode('Text Scan Failed');
+    setBarcode(scannedText);
+    setIsNewProduct(false);
     setStep('ERROR');
+  };
+
+  const handleAddNewProduct = async () => {
+    setIsAnalyzing(true);
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: `Analyze this barcode/SKU: "${barcode}". 
+        Suggest product details for a stocktake app. 
+        Return JSON format with: name, category, description, variantName, sku, barcode, quantity (default to 0).`,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING },
+              category: { type: Type.STRING },
+              description: { type: Type.STRING },
+              variantName: { type: Type.STRING },
+              sku: { type: Type.STRING },
+              barcode: { type: Type.STRING },
+              quantity: { type: Type.NUMBER }
+            },
+            required: ["name", "category", "sku", "barcode"]
+          }
+        }
+      });
+
+      const suggestedProduct = JSON.parse(response.text);
+      setProduct({
+        ...suggestedProduct,
+        barcode: barcode, // Ensure we use the scanned barcode
+        sku: suggestedProduct.sku || barcode,
+        quantity: 0
+      });
+      setIsNewProduct(true);
+      setStep('COUNT');
+    } catch (error) {
+      console.error('AI Analysis failed:', error);
+      toast.error('AI analysis failed. Please enter details manually.');
+      // Fallback to manual entry with basic info
+      setProduct({
+        name: 'New Product',
+        category: 'Miscellaneous',
+        description: '',
+        variantName: '',
+        sku: barcode,
+        barcode: barcode,
+        quantity: 0
+      });
+      setIsNewProduct(true);
+      setStep('COUNT');
+    } finally {
+      setIsAnalyzing(false);
+    }
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     handleScan(barcode);
   };
-
-  const [isSaving, setIsSaving] = useState(false);
-  const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
-  const [piecesPerBox, setPiecesPerBox] = useState('');
 
   const handleCountSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -118,12 +186,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
     }
 
     const variance = qty - product.quantity;
-    let variancePercent = 0;
-    if (product.quantity === 0) {
-      variancePercent = qty > 0 ? 100 : 0;
-    } else {
-      variancePercent = Math.round((variance / product.quantity) * 1000) / 10;
-    }
+    const variancePercentage = product.quantity !== 0 ? (variance / product.quantity) : 0;
 
     const record: StocktakeRecord = {
       id: crypto.randomUUID(),
@@ -135,16 +198,22 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       barcode: product.barcode,
       barcodeScanned: barcode,
       quantity: product.quantity,
+      originalQuantity: product.quantity,
       physicalQty: qty,
+      physicalCount: qty,
       unitType: unitType,
       variance: variance,
-      variancePercent: variancePercent,
+      variancePercent: Math.round(variancePercentage * 100),
+      variancePercentage: variancePercentage,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
-      status: 'Pending',
+      status: isNewProduct ? 'Pending' : 'Pending', // User requested 'Pending' for new products
+      mode: mode,
+      isNewProduct: isNewProduct,
     };
 
     await addRecord(record);
+    await saveRecordToScript(record);
     setIsSaving(false);
     setStep('SUCCESS');
     setTimeout(() => {
@@ -153,7 +222,12 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
   };
 
   const reset = () => {
-    setStep('SCAN');
+    const isCompleted = localStorage.getItem('inv_stocktake_completed') === 'true';
+    if (isCompleted) {
+      setStep('COMPLETED');
+    } else {
+      setStep('SCAN');
+    }
     setBarcode('');
     setProduct(null);
     setPhysicalQty('');
@@ -170,52 +244,69 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       {step === 'LANDING' && (
         <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300">
           <div className="text-center space-y-4">
-            <div className="bg-blue-100 text-blue-600 p-6 rounded-full inline-block mb-4">
-              <ClipboardList size={64} />
+            <div className={`p-6 rounded-full inline-block mb-4 transition-colors ${mode === 'Stocktake' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}`}>
+              {mode === 'Stocktake' ? <ClipboardList size={64} /> : <Truck size={64} />}
             </div>
-            <h2 className="text-3xl font-bold text-gray-800">Ready to Count?</h2>
+            <h2 className="text-3xl font-bold text-gray-800">Inventory Operations</h2>
             <p className="text-gray-500 max-w-xs mx-auto">
-              Start a new stocktake session to begin scanning and counting your inventory.
+              Select a mode and start scanning to manage your inventory.
             </p>
           </div>
-          <button
-            onClick={() => setStep('SCAN')}
-            className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-semibold text-xl flex items-center justify-center space-x-2 shadow-lg shadow-blue-200 transition-all active:scale-95"
-          >
-            <span>Start Stocktake</span>
-          </button>
+
+          <div className="w-full space-y-6">
+            <div className="flex bg-gray-100 p-1 rounded-2xl">
+              <button
+                onClick={() => setMode('Stocktake')}
+                className={`flex-1 py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all ${
+                  mode === 'Stocktake' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <ClipboardList size={20} />
+                Stocktaking
+              </button>
+              <button
+                onClick={() => setMode('Receiving')}
+                className={`flex-1 py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all ${
+                  mode === 'Receiving' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Truck size={20} />
+                Receiving
+              </button>
+            </div>
+
+            <button
+              onClick={() => setStep('SCAN')}
+              className={`w-full py-4 text-white rounded-2xl font-semibold text-xl flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
+                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
+              }`}
+            >
+              <span>Start Scanning</span>
+            </button>
+          </div>
         </div>
       )}
 
       {step === 'SCAN' && (
         <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300">
           <div className="text-center space-y-2">
-            <div className="bg-blue-100 text-blue-600 p-4 rounded-full inline-block mb-2">
-              <Package size={48} />
+            <div className={`p-4 rounded-full inline-block mb-2 ${mode === 'Stocktake' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}`}>
+              {mode === 'Stocktake' ? <Package size={48} /> : <Truck size={48} />}
             </div>
-            <h2 className="text-2xl font-bold text-gray-800">Stocktake Mode</h2>
-            <p className="text-gray-500">Scan a barcode to begin counting</p>
+            <h2 className="text-2xl font-bold text-gray-800">{mode} Mode</h2>
+            <p className="text-gray-500">Scan a barcode to begin {mode.toLowerCase()}</p>
           </div>
 
           <div className="w-full space-y-3">
             <button
               onClick={() => setShowScanner(true)}
-              className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg shadow-blue-200 transition-all active:scale-95"
+              className={`w-full py-4 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
+                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
+              }`}
             >
               <Camera size={24} />
               <span>Open Camera Scanner</span>
             </button>
-
-            {onSync && (
-              <button
-                onClick={onSync}
-                disabled={isSyncing}
-                className="w-full py-3 bg-white border-2 border-blue-100 text-blue-600 rounded-2xl font-semibold text-sm flex items-center justify-center space-x-2 transition-all active:scale-95 disabled:opacity-50"
-              >
-                <RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} />
-                <span>{isSyncing ? 'Syncing Products...' : 'Sync Products Now'}</span>
-              </button>
-            )}
           </div>
 
           <div className="w-full relative">
@@ -236,7 +327,9 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
                   value={barcode}
                   onChange={(e) => setBarcode(e.target.value)}
                   placeholder="Scan or type barcode..."
-                  className="w-full pl-12 pr-4 py-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0 text-lg transition-colors"
+                  className={`w-full pl-12 pr-4 py-4 bg-white border-2 rounded-2xl focus:ring-0 text-lg transition-colors ${
+                    mode === 'Stocktake' ? 'border-gray-200 focus:border-blue-500' : 'border-gray-200 focus:border-green-500'
+                  }`}
                   autoComplete="off"
                 />
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={24} />
@@ -244,21 +337,42 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
               <button
                 type="submit"
                 disabled={!barcode.trim()}
-                className="py-4 px-6 bg-gray-900 hover:bg-gray-800 text-white rounded-2xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                className={`py-4 px-6 text-white rounded-2xl font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
+                  mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'
+                }`}
               >
                 Search
               </button>
             </div>
           </form>
 
-          <div className="mt-auto pt-8 w-full">
+          <div className="mt-auto pt-8 w-full space-y-3">
             <button
               onClick={() => setStep('LANDING')}
               className="w-full py-4 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 transition-all active:scale-95"
             >
-              <CheckCircle2 size={24} />
-              <span>Done Stocktaking</span>
+              <ArrowRight size={24} className="rotate-180" />
+              <span>Back to Menu</span>
             </button>
+          </div>
+        </div>
+      )}
+
+      {step === 'COMPLETED' && (
+        <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300">
+          <div className="text-center space-y-4">
+            <div className="bg-green-100 text-green-600 p-6 rounded-full inline-block mb-4">
+              <CheckCircle2 size={64} />
+            </div>
+            <h2 className="text-3xl font-bold text-gray-800">Stocktake Completed</h2>
+            <p className="text-gray-500 max-w-xs mx-auto">
+              You have completed the stocktake. Scanning is now disabled. Please wait for the auditor to sign off.
+            </p>
+          </div>
+          <div className="bg-blue-50 p-4 rounded-xl border border-blue-100 w-full">
+            <p className="text-blue-800 text-sm font-medium text-center">
+              The auditor has been notified of your completion.
+            </p>
           </div>
         </div>
       )}
@@ -270,37 +384,36 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
             <button onClick={reset} className="text-sm text-gray-500 hover:text-gray-800 font-medium">Cancel</button>
           </div>
 
-          <div className="bg-white rounded-2xl p-6 shadow-sm border border-gray-100 mb-6">
+          <div className={`rounded-2xl p-6 shadow-lg mb-6 text-white ${
+            mode === 'Stocktake' ? 'bg-blue-600 shadow-blue-100' : 'bg-green-600 shadow-green-100'
+          }`}>
             <div className="flex items-start justify-between mb-4">
               <div>
-                <h3 className="text-lg font-bold text-gray-900">{product.name}</h3>
+                <h3 className="text-lg font-bold text-white">{product.name}</h3>
                 {product.variantName && (
-                  <p className="text-sm font-medium text-gray-700 mt-1">Variant: {product.variantName}</p>
+                  <p className="text-sm font-medium text-white/80 mt-1">Variant: {product.variantName}</p>
                 )}
-                <p className="text-sm text-gray-500 font-mono mt-1">SKU: {product.sku}</p>
+                <p className="text-sm text-white/60 font-mono mt-1">SKU: {product.sku}</p>
               </div>
-              <span className="bg-gray-100 text-gray-600 text-xs px-2 py-1 rounded font-medium">
+              <span className={`text-xs px-2 py-1 rounded font-bold uppercase tracking-wider ${
+                mode === 'Stocktake' ? 'bg-blue-500 text-white' : 'bg-green-500 text-white'
+              }`}>
                 {product.category}
               </span>
             </div>
-            
-            <div className="flex items-center justify-between py-3 border-t border-b border-gray-50 mb-4">
-              <span className="text-gray-600">Quantity</span>
-              <span className="text-xl font-semibold text-gray-900">{product.quantity}</span>
-            </div>
 
             <form onSubmit={handleCountSubmit} className="space-y-4">
-              <div className="flex bg-gray-100 p-1 rounded-lg mb-4">
+              <div className="flex bg-white/10 p-1 rounded-lg mb-4">
                 <button
                   type="button"
-                  className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${unitType === 'Piece' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  className={`flex-1 py-2 rounded-md text-sm font-bold transition-colors ${unitType === 'Piece' ? 'bg-white text-gray-900 shadow' : 'text-white/60 hover:text-white'}`}
                   onClick={() => setUnitType('Piece')}
                 >
                   Piece
                 </button>
                 <button
                   type="button"
-                  className={`flex-1 py-2 rounded-md text-sm font-medium transition-colors ${unitType === 'Box' ? 'bg-white shadow text-gray-900' : 'text-gray-500 hover:text-gray-700'}`}
+                  className={`flex-1 py-2 rounded-md text-sm font-bold transition-colors ${unitType === 'Box' ? 'bg-white text-gray-900 shadow' : 'text-white/60 hover:text-white'}`}
                   onClick={() => setUnitType('Box')}
                 >
                   Box
@@ -309,7 +422,9 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
 
               {unitType === 'Piece' ? (
                 <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">Physical Count (Pieces)</label>
+                  <label className="block text-sm font-bold text-white/70 uppercase tracking-wider mb-2">
+                    {mode === 'Stocktake' ? 'Physical Count (Pieces)' : 'Qty Received'}
+                  </label>
                   <input
                     type="number"
                     required
@@ -317,14 +432,16 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
                     autoFocus
                     value={physicalQty}
                     onChange={(e) => setPhysicalQty(e.target.value)}
-                    className="w-full text-center text-3xl font-bold py-4 bg-gray-50 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:bg-white transition-colors"
+                    className="w-full text-center text-5xl font-bold py-6 bg-white/10 border-2 border-white/20 rounded-2xl focus:border-white focus:bg-white/20 focus:outline-none text-white transition-all placeholder:text-white/20"
                     placeholder="0"
                   />
                 </div>
               ) : (
                 <div className="space-y-4">
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Number of Boxes</label>
+                    <label className="block text-sm font-bold text-white/70 uppercase tracking-wider mb-2">
+                      {mode === 'Stocktake' ? 'Number of Boxes' : 'Qty Received'}
+                    </label>
                     <input
                       type="number"
                       required
@@ -332,23 +449,25 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
                       autoFocus
                       value={physicalQty}
                       onChange={(e) => setPhysicalQty(e.target.value)}
-                      className="w-full text-center text-3xl font-bold py-4 bg-gray-50 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:bg-white transition-colors"
+                      className="w-full text-center text-5xl font-bold py-6 bg-white/10 border-2 border-white/20 rounded-2xl focus:border-white focus:bg-white/20 focus:outline-none text-white transition-all placeholder:text-white/20"
                       placeholder="0"
                     />
                   </div>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-2">Pieces per Box</label>
+                    <label className="block text-sm font-bold text-white/70 uppercase tracking-wider mb-2">Pieces per Box</label>
                     <input
                       type="number"
                       required
                       min="1"
                       value={piecesPerBox}
                       onChange={(e) => setPiecesPerBox(e.target.value)}
-                      className="w-full text-center text-3xl font-bold py-4 bg-gray-50 border-2 border-gray-200 rounded-xl focus:border-blue-500 focus:bg-white transition-colors"
+                      className="w-full text-center text-3xl font-bold py-4 bg-white/10 border-2 border-white/20 rounded-xl focus:border-white focus:bg-white/20 focus:outline-none text-white transition-all placeholder:text-white/20"
                       placeholder="0"
                     />
                   </div>
-                  <div className="bg-blue-50 text-blue-800 p-3 rounded-lg text-center font-medium">
+                  <div className={`p-3 rounded-lg text-center font-bold ${
+                    mode === 'Stocktake' ? 'bg-blue-500 text-white' : 'bg-green-500 text-white'
+                  }`}>
                     Total: {(parseInt(physicalQty || '0', 10) * parseInt(piecesPerBox || '0', 10)).toLocaleString()} pieces
                   </div>
                 </div>
@@ -357,9 +476,11 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
               <button
                 type="submit"
                 disabled={isSaving}
-                className="w-full py-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-md transition-all active:scale-95 disabled:opacity-70 mt-6"
+                className={`w-full py-4 rounded-2xl font-bold text-xl flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 disabled:opacity-70 mt-6 ${
+                  mode === 'Stocktake' ? 'bg-white text-blue-600 hover:bg-blue-50' : 'bg-white text-green-600 hover:bg-green-50'
+                }`}
               >
-                <span>{isSaving ? 'Saving...' : 'Submit Count'}</span>
+                <span>{isSaving ? 'Saving...' : mode === 'Stocktake' ? 'Submit Count' : 'Submit Received'}</span>
                 {!isSaving && <ArrowRight size={20} />}
               </button>
             </form>
@@ -380,10 +501,29 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
 
           <div className="space-y-3">
             <button
-              onClick={reset}
-              className="w-full py-4 bg-gray-900 hover:bg-gray-800 text-white rounded-xl font-semibold flex items-center justify-center space-x-2 transition-all"
+              onClick={handleAddNewProduct}
+              disabled={isAnalyzing}
+              className={`w-full py-4 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 ${
+                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
+              }`}
             >
-              <span>Try Again</span>
+              {isAnalyzing ? (
+                <>
+                  <Loader2 size={24} className="animate-spin" />
+                  <span>AI Analyzing...</span>
+                </>
+              ) : (
+                <>
+                  <Plus size={24} />
+                  <span>Add New Product</span>
+                </>
+              )}
+            </button>
+            <button
+              onClick={reset}
+              className="w-full py-4 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded-2xl font-semibold text-lg transition-all active:scale-95"
+            >
+              Try Again
             </button>
           </div>
         </div>

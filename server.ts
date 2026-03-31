@@ -14,6 +14,12 @@ async function startServer() {
   app.use(express.json());
   app.use(cookieParser());
 
+  // Request logger
+  app.use((req, res, next) => {
+    console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
+    next();
+  });
+
   // OAuth setup
   const getRedirectUri = () => {
     const baseUrl = (process.env.APP_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -31,6 +37,57 @@ async function startServer() {
   // API Routes
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok' });
+  });
+
+  app.get('/api/auth/permissions', async (req, res) => {
+    const { email } = req.query;
+    console.log(`Checking permissions for email: ${email || 'ALL'}`);
+    
+    const scriptsUrl = process.env.VITE_SCRIPTS_URL || process.env.SCRIPTS_URL;
+    if (!scriptsUrl) {
+      console.error('SCRIPTS_URL not configured in environment');
+      return res.status(500).json({ error: 'Scripts URL not configured' });
+    }
+
+    try {
+      const targetUrl = email 
+        ? `${scriptsUrl}?email=${encodeURIComponent(email as string)}`
+        : scriptsUrl;
+      console.log(`Fetching from Apps Script: ${targetUrl}`);
+      
+      const response = await fetch(targetUrl);
+      const contentType = response.headers.get('content-type');
+      const text = await response.text();
+      
+      console.log(`Apps Script response status: ${response.status}`);
+      console.log(`Apps Script response content-type: ${contentType}`);
+
+      if (!response.ok) {
+        console.error(`Apps Script error response: ${text}`);
+        return res.status(response.status).json({ error: `Apps Script responded with ${response.status}` });
+      }
+
+      try {
+        const data = JSON.parse(text);
+        res.json(data);
+      } catch (parseError) {
+        console.error('Failed to parse Apps Script response as JSON:', parseError);
+        console.error('Raw response text:', text.substring(0, 500) + (text.length > 500 ? '...' : ''));
+        
+        // If it's HTML, it's likely a login page or error page from Google
+        if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+          return res.status(500).json({ 
+            error: 'Apps Script returned an HTML page instead of JSON. This usually means the script is not published as "Anyone" or requires a Google login.',
+            isHtml: true
+          });
+        }
+        
+        res.status(500).json({ error: 'Apps Script returned invalid JSON' });
+      }
+    } catch (error) {
+      console.error('Failed to fetch permissions from Apps Script:', error);
+      res.status(500).json({ error: 'Failed to fetch permissions' });
+    }
   });
 
   app.get('/api/auth/url', (req, res) => {
@@ -147,6 +204,29 @@ async function startServer() {
     return null;
   };
 
+  app.post('/api/scripts/post', async (req, res) => {
+    const scriptsUrl = process.env.VITE_SCRIPTS_URL || process.env.SCRIPTS_URL;
+    if (!scriptsUrl) {
+      return res.status(500).json({ error: 'Scripts URL not configured' });
+    }
+
+    try {
+      const response = await fetch(scriptsUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(req.body)
+      });
+      if (!response.ok) {
+        throw new Error(`Apps Script responded with ${response.status}`);
+      }
+      const data = await response.json();
+      res.json(data);
+    } catch (error) {
+      console.error('Failed to post to Apps Script:', error);
+      res.status(500).json({ error: 'Failed to post to Apps Script' });
+    }
+  });
+
   app.get('/api/sheets/products', async (req, res) => {
     const { spreadsheetId } = req.query;
     if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID required' });
@@ -235,12 +315,87 @@ async function startServer() {
     }
   });
 
+  app.get('/api/sheets/records', async (req, res) => {
+    const { spreadsheetId } = req.query;
+    if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID required' });
+
+    const authClient = getAuthClient(req);
+    if (!authClient) return res.status(401).json({ error: 'Authentication required' });
+
+    try {
+      const sheets = google.sheets({ version: 'v4', auth: authClient as any });
+      const spreadsheet = await sheets.spreadsheets.get({
+        spreadsheetId: spreadsheetId as string,
+      });
+
+      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title || '') || [];
+      const scanSheets = sheetNames.filter(s => 
+        (s.startsWith('Scan-') || s.startsWith('Receiving-') || s.startsWith('New-')) && 
+        s !== 'Permissions'
+      );
+      
+      if (scanSheets.length === 0) {
+        return res.json({ records: [] });
+      }
+
+      let allRecords: any[] = [];
+
+      for (const sheetName of scanSheets) {
+        try {
+          const response = await sheets.spreadsheets.values.get({
+            spreadsheetId: spreadsheetId as string,
+            range: `'${sheetName}'!A2:R`, // Fetch up to column R (18 columns)
+          });
+
+          const rows = response.data.values || [];
+          const sheetRecords = rows
+            .filter(row => row[1] && row[2]) // Ensure Category and Product Name exist
+            .map((row, index) => ({
+              id: row[0] || `${sheetName}-row-${index}`,
+              category: row[1] || '',
+              productName: row[2] || '',
+              sku: row[3] || '',
+              variant: row[4] || '',
+              barcodeScanned: row[5] || '',
+              originalQuantity: parseFloat(row[6]) || 0,
+              physicalQty: parseFloat(row[7]) || 0,
+              physicalCount: parseFloat(row[8]) || 0,
+              unitType: row[9] || 'Piece',
+              variance: parseFloat(row[10]) || 0,
+              variancePercentage: parseFloat(row[11]) || 0,
+              timestamp: row[12] || new Date().toISOString(),
+              user: row[13] || 'Unknown',
+              auditor: row[14] || '',
+              status: row[15] || 'Pending',
+              mode: row[16] || (sheetName.startsWith('Receiving-') ? 'Receiving' : 'Stocktake'),
+              isNewProduct: row[17] === 'TRUE' || row[17] === 'true' || sheetName.startsWith('New-'),
+              sheetName: sheetName,
+            }));
+          
+          allRecords = [...allRecords, ...sheetRecords];
+        } catch (err) {
+          console.error(`Error fetching from sheet ${sheetName}:`, err);
+          // Continue to next sheet
+        }
+      }
+
+      // Sort by timestamp descending
+      allRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+      res.json({ records: allRecords });
+    } catch (error) {
+      console.error('Fetch Records Error:', error);
+      res.status(500).json({ error: 'Failed to fetch records from Google Sheets' });
+    }
+  });
+
   app.post('/api/sheets/records', async (req, res) => {
     const { spreadsheetId, record } = req.body;
     if (!spreadsheetId || !record) return res.status(400).json({ error: 'Missing parameters' });
 
     // Try to use Apps Script Web App if configured
-    if (process.env.SCRIPTS_URL) {
+    const scriptsUrl = process.env.VITE_SCRIPTS_URL || process.env.SCRIPTS_URL;
+    if (scriptsUrl) {
       try {
         const payload = {
           spreadsheetId,
@@ -250,16 +405,21 @@ async function startServer() {
           description: record.description,
           sku: record.sku,
           barcode: record.barcode,
-          quantity: record.physicalQty, // The physical quantity scanned
-          originalQuantity: record.quantity, // The stock level before the edit
+          originalQuantity: record.originalQuantity,
+          physicalCount: record.physicalCount,
           unitType: record.unitType,
           variance: record.variance,
+          variancePercentage: record.variancePercentage,
           timestamp: record.timestamp,
           user: record.user,
-          status: record.status
+          userEmail: record.userEmail || record.user, // Ensure userEmail is sent as requested
+          auditor: record.auditor,
+          status: record.status,
+          sheetName: record.sheetName, // Send sheetName to script
+          update: record.update // Send update flag to script
         };
 
-        const response = await fetch(process.env.SCRIPTS_URL, {
+        const response = await fetch(scriptsUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload)
@@ -279,9 +439,15 @@ async function startServer() {
       try {
         const sheets = google.sheets({ version: 'v4', auth: authClient as any });
 
-        // Create a sheet name based on the date of the scan (YYYY-MM-DD)
-        const scanDate = new Date(record.timestamp);
-        const sheetName = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
+        // Use the sheetName provided by the record, or calculate it
+        const sheetName = record.sheetName || (() => {
+          const scanDate = new Date(record.timestamp);
+          const dateStr = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
+          let prefix = 'Scan-';
+          if (record.isNewProduct) prefix = 'New-';
+          else if (record.mode === 'Receiving') prefix = 'Receiving-';
+          return `${prefix}${dateStr}`;
+        })();
 
         // Check if the date-specific sheet exists
         const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
@@ -301,35 +467,91 @@ async function startServer() {
 
           await sheets.spreadsheets.values.append({
             spreadsheetId,
-            range: `'${sheetName}'!A1:L1`,
+            range: `'${sheetName}'!A1:R1`,
             valueInputOption: 'USER_ENTERED',
             requestBody: {
               values: [
-                ['ID', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']
+                ['ID', 'Category', 'Product Name', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Physical Count', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Auditor', 'Status', 'Mode', 'Is New Product']
               ]
             }
           });
         }
 
+        // If update flag is set, find the row by SKU or Barcode and update it
+        if (record.update) {
+          const response = await sheets.spreadsheets.values.get({
+            spreadsheetId,
+            range: `'${sheetName}'!A:R`,
+          });
+          const rows = response.data.values || [];
+          
+          // Find row by SKU (column D, index 3) or Barcode (column F, index 5)
+          // Skip header row (index 0)
+          const rowIndex = rows.findIndex((row, i) => 
+            i > 0 && (row[3] === record.sku || row[5] === record.barcodeScanned)
+          );
+
+          if (rowIndex !== -1) {
+            // Update existing row (rowIndex + 1 because Sheets is 1-indexed)
+            await sheets.spreadsheets.values.update({
+              spreadsheetId,
+              range: `'${sheetName}'!A${rowIndex + 1}:R${rowIndex + 1}`,
+              valueInputOption: 'USER_ENTERED',
+              requestBody: {
+                values: [
+                  [
+                    record.id,
+                    record.category || '',
+                    record.productName || '',
+                    record.sku,
+                    record.variant || record.variantName || '',
+                    record.barcodeScanned,
+                    record.originalQuantity,
+                    record.physicalQty || record.physicalCount,
+                    record.physicalCount,
+                    record.unitType === 'Piece' ? 'pcs' : 'case',
+                    record.variance,
+                    record.variancePercentage,
+                    record.timestamp,
+                    record.userEmail || record.user, // Use userEmail if available
+                    record.auditor || '',
+                    record.status,
+                    record.mode || 'Stocktake',
+                    record.isNewProduct ? 'TRUE' : 'FALSE'
+                  ]
+                ]
+              }
+            });
+            return res.json({ success: true, updated: true });
+          }
+        }
+
+        // Default: Append as new row
         await sheets.spreadsheets.values.append({
           spreadsheetId,
-          range: `'${sheetName}'!A:L`,
+          range: `'${sheetName}'!A:R`,
           valueInputOption: 'USER_ENTERED',
           requestBody: {
             values: [
               [
                 record.id,
+                record.category || '',
+                record.productName || '',
                 record.sku,
-                record.variantName || '',
+                record.variant || record.variantName || '',
                 record.barcodeScanned,
-                record.quantity,
-                record.physicalQty,
+                record.originalQuantity,
+                record.physicalQty || record.physicalCount,
+                record.physicalCount,
                 record.unitType === 'Piece' ? 'pcs' : 'case',
                 record.variance,
-                record.variancePercent !== undefined ? `${record.variancePercent}%` : '',
+                record.variancePercentage,
                 record.timestamp,
-                record.user,
-                record.status
+                record.userEmail || record.user, // Use userEmail if available
+                record.auditor || '',
+                record.status,
+                record.mode || 'Stocktake',
+                record.isNewProduct ? 'TRUE' : 'FALSE'
               ]
             ]
           }
