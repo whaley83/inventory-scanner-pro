@@ -186,13 +186,22 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
     }
 
     const variance = qty - product.quantity;
-    const variancePercentage = product.quantity !== 0 ? (variance / product.quantity) : 0;
+    let variancePercentage = 0;
+    if (product.quantity !== 0) {
+      variancePercentage = (variance / product.quantity);
+    } else if (variance > 0) {
+      variancePercentage = 1.0; // +100%
+    }
+
+    const productName = product.variantName && product.name.includes(product.variantName) 
+      ? product.name.replace(product.variantName, '').trim() 
+      : product.name;
 
     const record: StocktakeRecord = {
       id: crypto.randomUUID(),
       sku: product.sku,
       category: product.category,
-      productName: product.name,
+      productName: productName,
       variant: product.variantName,
       description: product.description,
       barcode: product.barcode,

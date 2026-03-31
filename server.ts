@@ -545,10 +545,15 @@ async function startServer() {
           });
           const rows = response.data.values || [];
           
-          // Find row by Product Name (column C, index 2), SKU (column D, index 3) or Barcode (column F, index 5)
+          // Find row by Product Name (column C, index 2) AND Variant (column E, index 4), 
+          // or SKU (column D, index 3) or Barcode (column F, index 5)
           // Skip header row (index 0)
           const rowIndex = rows.findIndex((row, i) => 
-            i > 0 && (row[2] === record.productName || row[3] === record.sku || row[5] === record.barcodeScanned)
+            i > 0 && (
+              (row[2] === record.productName && row[4] === (record.variant || '')) || 
+              row[3] === record.sku || 
+              row[5] === record.barcodeScanned
+            )
           );
 
           if (rowIndex !== -1) {

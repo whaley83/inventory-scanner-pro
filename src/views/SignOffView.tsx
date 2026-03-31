@@ -25,7 +25,12 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
   });
 
   const getProductName = (sku: string) => {
-    return products.find(p => p.sku === sku)?.name || 'Unknown Product';
+    const product = products.find(p => p.sku === sku);
+    return product?.name || 'Unknown Product';
+  };
+
+  const getProductVariant = (sku: string) => {
+    return products.find(p => p.sku === sku)?.variantName || '';
   };
 
   const formatDate = (isoString: string) => {
@@ -43,7 +48,7 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
   };
 
   return (
-    <div className="flex flex-col h-full max-w-5xl mx-auto w-full p-4 relative">
+    <div className="flex flex-col h-full max-w-5xl mx-auto w-full p-4 relative overflow-y-auto pb-32">
       {/* Delete Confirmation Modal */}
       {recordToDelete && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -122,8 +127,8 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
               <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
                 <th className="p-4 font-medium">Product</th>
                 <th className="p-4 font-medium">Variant</th>
-                <th className="p-4 font-medium">Quantity</th>
-                <th className="p-4 font-medium">Physical</th>
+                <th className="p-4 font-medium">Original Qty</th>
+                <th className="p-4 font-medium">Physical / Received</th>
                 <th className="p-4 font-medium">Variance</th>
                 <th className="p-4 font-medium">Time / User</th>
                 <th className="p-4 font-medium text-right">Action</th>
@@ -134,7 +139,17 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                 <tr key={`${record.id}-${index}`} className="hover:bg-gray-50 transition-colors">
                   <td className="p-4">
                     <div className="flex items-center gap-2">
-                      <div className="font-medium text-gray-900">{record.productName || getProductName(record.sku)}</div>
+                      <div className="font-medium text-gray-900">
+                        {(() => {
+                          const name = record.productName || getProductName(record.sku);
+                          const variant = record.variant || getProductVariant(record.sku);
+                          // If the name includes the variant, strip it for display
+                          if (variant && name.includes(variant)) {
+                            return name.replace(variant, '').trim();
+                          }
+                          return name;
+                        })()}
+                      </div>
                       {record.isNewProduct && (
                         <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">NEW</span>
                       )}
@@ -147,13 +162,16 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                     <div className="text-xs text-gray-500 font-mono mt-1">{record.sku}</div>
                   </td>
                   <td className="p-4 text-gray-600">
-                    {record.variant ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                        {record.variant}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400 text-xs">-</span>
-                    )}
+                    {(() => {
+                      const variant = record.variant || getProductVariant(record.sku);
+                      return variant ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                          {variant}
+                        </span>
+                      ) : (
+                        <span className="text-gray-400 text-xs">-</span>
+                      );
+                    })()}
                   </td>
                   <td className="p-4 text-gray-600">
                     {record.mode === 'Receiving' ? (
