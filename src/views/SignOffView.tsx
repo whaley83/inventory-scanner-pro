@@ -122,33 +122,31 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
 
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex-1 flex flex-col">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full text-left border-collapse min-w-[1000px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
-                <th className="p-4 font-medium">Product</th>
-                <th className="p-4 font-medium">Variant</th>
-                <th className="p-4 font-medium">Original Qty</th>
-                <th className="p-4 font-medium">Physical / Received</th>
-                <th className="p-4 font-medium">Variance</th>
-                <th className="p-4 font-medium">Time / User</th>
-                <th className="p-4 font-medium text-right">Action</th>
+                <th className="p-4 font-medium whitespace-nowrap">Category</th>
+                <th className="p-4 font-medium whitespace-nowrap">Product</th>
+                <th className="p-4 font-medium whitespace-nowrap">Variant</th>
+                <th className="p-4 font-medium whitespace-nowrap">Original Qty</th>
+                <th className="p-4 font-medium whitespace-nowrap">Physical / Received</th>
+                <th className="p-4 font-medium whitespace-nowrap">Variance</th>
+                <th className="p-4 font-medium whitespace-nowrap">Time / User</th>
+                <th className="p-4 font-medium text-right whitespace-nowrap">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {filteredRecords.map((record, index) => (
                 <tr key={`${record.id}-${index}`} className="hover:bg-gray-50 transition-colors">
-                  <td className="p-4">
+                  <td className="p-4 whitespace-nowrap">
+                    <span className="px-2 py-1 text-[10px] font-medium bg-gray-100 text-gray-600 rounded uppercase tracking-wider">
+                      {record.category || 'Uncategorized'}
+                    </span>
+                  </td>
+                  <td className="p-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <div className="font-medium text-gray-900">
-                        {(() => {
-                          const name = record.productName || getProductName(record.sku);
-                          const variant = record.variant || getProductVariant(record.sku);
-                          // If the name includes the variant, strip it for display
-                          if (variant && name.includes(variant)) {
-                            return name.replace(variant, '').trim();
-                          }
-                          return name;
-                        })()}
+                        {record.productName || getProductName(record.sku)}
                       </div>
                       {record.isNewProduct && (
                         <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">NEW</span>
@@ -161,27 +159,24 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                     </div>
                     <div className="text-xs text-gray-500 font-mono mt-1">{record.sku}</div>
                   </td>
-                  <td className="p-4 text-gray-600">
-                    {(() => {
-                      const variant = record.variant || getProductVariant(record.sku);
-                      return variant ? (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                          {variant}
-                        </span>
-                      ) : (
-                        <span className="text-gray-400 text-xs">-</span>
-                      );
-                    })()}
+                  <td className="p-4 whitespace-nowrap">
+                    {record.variant ? (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
+                        {record.variant}
+                      </span>
+                    ) : (
+                      <span className="text-gray-400 text-xs">-</span>
+                    )}
                   </td>
-                  <td className="p-4 text-gray-600">
+                  <td className="p-4 whitespace-nowrap text-gray-600">
                     {record.mode === 'Receiving' ? (
                       <span className="text-gray-400 text-xs">-</span>
                     ) : (
-                      record.quantity
+                      record.originalQuantity
                     )}
                   </td>
-                  <td className="p-4 font-semibold">{record.physicalQty}</td>
-                  <td className="p-4">
+                  <td className="p-4 whitespace-nowrap font-semibold">{record.physicalQty}</td>
+                  <td className="p-4 whitespace-nowrap">
                     {record.mode === 'Receiving' ? (
                       <span className="text-gray-400 text-xs">-</span>
                     ) : (
@@ -202,14 +197,14 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                       </div>
                     )}
                   </td>
-                  <td className="p-4 text-sm text-gray-500">
+                  <td className="p-4 whitespace-nowrap text-sm text-gray-500">
                     <div>{formatDate(record.timestamp)}</div>
                     <div className="text-xs flex items-center gap-1 mt-1">
                       <span className="text-gray-400 font-medium uppercase text-[9px]">Scanner:</span>
                       <span className="truncate max-w-[120px]">{record.user || userEmail || 'Unknown User'}</span>
                     </div>
                   </td>
-                  <td className="p-4 text-right">
+                  <td className="p-4 text-right whitespace-nowrap">
                     <div className="flex justify-end items-center space-x-2">
                       {record.status === 'Pending' ? (
                         <>

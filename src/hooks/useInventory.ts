@@ -159,11 +159,29 @@ export function useInventory() {
           body: JSON.stringify({ 
             spreadsheetId, 
             record: { 
-              ...record, 
-              auditor: record.auditor || auditorEmail,
+              id: record.id,
+              category: record.category || '',
+              productName: record.productName || '',
+              sku: record.sku || '',
+              variant: record.variant || '',
+              description: record.description || '',
+              barcode: record.barcode || '',
+              barcodeScanned: record.barcodeScanned || '',
+              originalQuantity: record.originalQuantity || 0,
+              physicalQty: record.physicalQty || 0,
+              physicalCount: record.physicalCount || 0,
+              unitType: record.unitType || 'Piece',
+              variance: record.variance || 0,
+              variancePercentage: record.variancePercentage || 0,
+              timestamp: record.timestamp,
+              user: record.user, // Scanner email
               userEmail: record.user, // Ensure original scanner email is sent as userEmail
-              sheetName, // Send the exact sheet name
-              update: true // Send update flag to prevent duplicates
+              auditor: record.auditor || auditorEmail, // Logged in user is the auditor
+              status: record.status,
+              mode: record.mode,
+              isNewProduct: record.isNewProduct,
+              sheetName, 
+              update: true 
             } 
           })
         });
@@ -197,6 +215,9 @@ export function useInventory() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...record,
+          category: record.category || '',
+          productName: record.productName || '',
+          variant: record.variant || '',
           userEmail: record.user // Explicitly include userEmail as requested
         })
       });
