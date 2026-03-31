@@ -288,7 +288,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       )}
 
       {step === 'SCAN' && (
-        <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300">
+        <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300 overflow-y-auto pb-32">
           <div className="text-center space-y-2">
             <div className={`p-4 rounded-full inline-block mb-2 ${mode === 'Stocktake' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}`}>
               {mode === 'Stocktake' ? <Package size={48} /> : <Truck size={48} />}
@@ -378,7 +378,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       )}
 
       {step === 'COUNT' && product && (
-        <div className="flex flex-col h-full animate-in slide-in-from-right-4 duration-300">
+        <div className="flex flex-col h-full animate-in slide-in-from-right-4 duration-300 overflow-y-auto pb-32">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-bold text-gray-800">Record Count</h2>
             <button onClick={reset} className="text-sm text-gray-500 hover:text-gray-800 font-medium">Cancel</button>
@@ -489,7 +489,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       )}
 
       {step === 'ERROR' && (
-        <div className="flex flex-col h-full animate-in slide-in-from-bottom-4 duration-300">
+        <div className="flex flex-col h-full animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto pb-32">
           <div className="text-center mb-8 mt-4">
             <div className="bg-red-100 text-red-600 p-4 rounded-full inline-block mb-4">
               <AlertCircle size={32} />
