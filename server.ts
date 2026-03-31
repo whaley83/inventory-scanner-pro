@@ -350,27 +350,87 @@ async function startServer() {
           const rows = response.data.values || [];
           const sheetRecords = rows
             .filter(row => row[1] && row[2]) // Ensure Category and Product Name exist
-            .map((row, index) => ({
-              id: row[0] || `${sheetName}-row-${index}`,
-              category: row[1] || '',
-              productName: row[2] || '',
-              sku: row[3] || '',
-              variant: row[4] || '',
-              barcodeScanned: row[5] || '',
-              originalQuantity: parseFloat(row[6]) || 0,
-              physicalQty: parseFloat(row[7]) || 0,
-              physicalCount: parseFloat(row[8]) || 0,
-              unitType: row[9] || 'Piece',
-              variance: parseFloat(row[10]) || 0,
-              variancePercentage: parseFloat(row[11]) || 0,
-              timestamp: row[12] || new Date().toISOString(),
-              user: row[13] || 'Unknown',
-              auditor: row[14] || '',
-              status: row[15] || 'Pending',
-              mode: row[16] || (sheetName.startsWith('Receiving-') ? 'Receiving' : 'Stocktake'),
-              isNewProduct: row[17] === 'TRUE' || row[17] === 'true' || sheetName.startsWith('New-'),
-              sheetName: sheetName,
-            }));
+            .map((row, index) => {
+              const isScanSheet = sheetName.startsWith('Scan-');
+              const isReceivingOrNew = sheetName.startsWith('Receiving-') || sheetName.startsWith('New-');
+              
+              let originalQuantity = 0;
+              let physicalQty = 0;
+              let physicalCount = 0;
+              let variance = 0;
+              let variancePercentage = 0;
+              let timestamp = '';
+              let user = 'Unknown';
+              let auditor = '';
+              let status = 'Pending';
+              let mode = sheetName.startsWith('Receiving-') ? 'Receiving' : (sheetName.startsWith('New-') ? 'Receiving' : 'Stocktake');
+              let isNewProduct = sheetName.startsWith('New-');
+
+              if (isScanSheet) {
+                // For 'Scan-' sheets:
+                // Quantity (Original): Index 6 (Col G)
+                // Physical Count: Index 7 (Col H)
+                // Variance: Index 9 (Col J)
+                // Scanner: Index 11 (Col L)
+                originalQuantity = parseFloat(row[6]) || 0;
+                physicalQty = parseFloat(row[7]) || 0;
+                physicalCount = parseFloat(row[7]) || 0;
+                variance = parseFloat(row[9]) || 0;
+                variancePercentage = parseFloat(row[8]) || 0; // Assuming 8 is percentage if 9 is variance
+                timestamp = row[10] || new Date().toISOString(); // Assuming 10 is timestamp if 11 is scanner
+                user = row[11] || 'Unknown';
+                auditor = row[12] || '';
+                status = row[13] || 'Pending';
+                mode = row[14] || 'Stocktake';
+                isNewProduct = row[15] === 'TRUE' || row[15] === 'true';
+              } else if (isReceivingOrNew) {
+                // For 'Receiving-' and 'New-' sheets:
+                // Physical Count (Received): Index 6 (Col G)
+                // Scanner: Index 8 (Col I)
+                originalQuantity = 0;
+                physicalQty = parseFloat(row[6]) || 0;
+                physicalCount = parseFloat(row[6]) || 0;
+                variance = 0;
+                variancePercentage = 0;
+                timestamp = row[7] || new Date().toISOString(); // Assuming 7 is timestamp if 8 is scanner
+                user = row[8] || 'Unknown';
+                auditor = row[9] || '';
+                status = row[10] || 'Pending';
+                mode = row[11] || 'Receiving';
+                isNewProduct = row[12] === 'TRUE' || row[12] === 'true' || sheetName.startsWith('New-');
+              } else {
+                // Fallback
+                originalQuantity = parseFloat(row[6]) || 0;
+                physicalQty = parseFloat(row[7]) || 0;
+                physicalCount = parseFloat(row[8]) || 0;
+                variance = parseFloat(row[10]) || 0;
+                timestamp = row[12] || new Date().toISOString();
+                user = row[13] || 'Unknown';
+                auditor = row[14] || '';
+                status = row[15] || 'Pending';
+              }
+
+              return {
+                id: row[0] || `${sheetName}-row-${index}`,
+                category: row[1] || '',
+                productName: row[2] || '',
+                sku: row[3] || '',
+                variant: row[4] || '',
+                barcodeScanned: row[5] || '',
+                originalQuantity,
+                physicalQty,
+                physicalCount,
+                variance,
+                variancePercentage,
+                timestamp,
+                user,
+                auditor,
+                status,
+                mode,
+                isNewProduct,
+                sheetName: sheetName,
+              };
+            });
           
           allRecords = [...allRecords, ...sheetRecords];
         } catch (err) {
@@ -493,47 +553,47 @@ async function startServer() {
 
           if (rowIndex !== -1) {
             // Update existing row (rowIndex + 1 because Sheets is 1-indexed)
-            await sheets.spreadsheets.values.update({
-              spreadsheetId,
-              range: `'${sheetName}'!A${rowIndex + 1}:R${rowIndex + 1}`,
-              valueInputOption: 'USER_ENTERED',
-              requestBody: {
-                values: [
-                  [
-                    record.id,
-                    record.category || '',
-                    record.productName || '',
-                    record.sku,
-                    record.variant || record.variantName || '',
-                    record.barcodeScanned,
-                    record.originalQuantity,
-                    record.physicalQty || record.physicalCount,
-                    record.physicalCount,
-                    record.unitType === 'Piece' ? 'pcs' : 'case',
-                    record.variance,
-                    record.variancePercentage,
-                    record.timestamp,
-                    record.userEmail || record.user, // Use userEmail if available
-                    record.auditor || '',
-                    record.status,
-                    record.mode || 'Stocktake',
-                    record.isNewProduct ? 'TRUE' : 'FALSE'
-                  ]
-                ]
-              }
-            });
-            return res.json({ success: true, updated: true });
-          }
-        }
-
-        // Default: Append as new row
-        await sheets.spreadsheets.values.append({
-          spreadsheetId,
-          range: `'${sheetName}'!A:R`,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: {
-            values: [
-              [
+            const isScanSheet = sheetName.startsWith('Scan-');
+            const isReceivingOrNew = sheetName.startsWith('Receiving-') || sheetName.startsWith('New-');
+            
+            let rowValues: any[] = [];
+            if (isScanSheet) {
+              rowValues = [
+                record.id,
+                record.category || '',
+                record.productName || '',
+                record.sku,
+                record.variant || record.variantName || '',
+                record.barcodeScanned,
+                record.originalQuantity, // 6
+                record.physicalQty || record.physicalCount, // 7
+                record.variancePercentage, // 8
+                record.variance, // 9
+                record.timestamp, // 10
+                record.userEmail || record.user, // 11
+                record.auditor || '', // 12
+                record.status, // 13
+                record.mode || 'Stocktake', // 14
+                record.isNewProduct ? 'TRUE' : 'FALSE' // 15
+              ];
+            } else if (isReceivingOrNew) {
+              rowValues = [
+                record.id,
+                record.category || '',
+                record.productName || '',
+                record.sku,
+                record.variant || record.variantName || '',
+                record.barcodeScanned,
+                record.physicalQty || record.physicalCount, // 6
+                record.timestamp, // 7
+                record.userEmail || record.user, // 8
+                record.auditor || '', // 9
+                record.status, // 10
+                record.mode || 'Receiving', // 11
+                record.isNewProduct ? 'TRUE' : 'FALSE' // 12
+              ];
+            } else {
+              rowValues = [
                 record.id,
                 record.category || '',
                 record.productName || '',
@@ -547,13 +607,95 @@ async function startServer() {
                 record.variance,
                 record.variancePercentage,
                 record.timestamp,
-                record.userEmail || record.user, // Use userEmail if available
+                record.userEmail || record.user,
                 record.auditor || '',
                 record.status,
                 record.mode || 'Stocktake',
                 record.isNewProduct ? 'TRUE' : 'FALSE'
-              ]
-            ]
+              ];
+            }
+
+            await sheets.spreadsheets.values.update({
+              spreadsheetId,
+              range: `'${sheetName}'!A${rowIndex + 1}:R${rowIndex + 1}`,
+              valueInputOption: 'USER_ENTERED',
+              requestBody: {
+                values: [rowValues]
+              }
+            });
+            return res.json({ success: true, updated: true });
+          }
+        }
+
+        // Default: Append as new row
+        const isScanSheet = sheetName.startsWith('Scan-');
+        const isReceivingOrNew = sheetName.startsWith('Receiving-') || sheetName.startsWith('New-');
+        
+        let rowValues: any[] = [];
+        if (isScanSheet) {
+          rowValues = [
+            record.id,
+            record.category || '',
+            record.productName || '',
+            record.sku,
+            record.variant || record.variantName || '',
+            record.barcodeScanned,
+            record.originalQuantity, // 6
+            record.physicalQty || record.physicalCount, // 7
+            record.variancePercentage, // 8
+            record.variance, // 9
+            record.timestamp, // 10
+            record.userEmail || record.user, // 11
+            record.auditor || '', // 12
+            record.status, // 13
+            record.mode || 'Stocktake', // 14
+            record.isNewProduct ? 'TRUE' : 'FALSE' // 15
+          ];
+        } else if (isReceivingOrNew) {
+          rowValues = [
+            record.id,
+            record.category || '',
+            record.productName || '',
+            record.sku,
+            record.variant || record.variantName || '',
+            record.barcodeScanned,
+            record.physicalQty || record.physicalCount, // 6
+            record.timestamp, // 7
+            record.userEmail || record.user, // 8
+            record.auditor || '', // 9
+            record.status, // 10
+            record.mode || 'Receiving', // 11
+            record.isNewProduct ? 'TRUE' : 'FALSE' // 12
+          ];
+        } else {
+          rowValues = [
+            record.id,
+            record.category || '',
+            record.productName || '',
+            record.sku,
+            record.variant || record.variantName || '',
+            record.barcodeScanned,
+            record.originalQuantity,
+            record.physicalQty || record.physicalCount,
+            record.physicalCount,
+            record.unitType === 'Piece' ? 'pcs' : 'case',
+            record.variance,
+            record.variancePercentage,
+            record.timestamp,
+            record.userEmail || record.user,
+            record.auditor || '',
+            record.status,
+            record.mode || 'Stocktake',
+            record.isNewProduct ? 'TRUE' : 'FALSE'
+          ];
+        }
+
+        await sheets.spreadsheets.values.append({
+          spreadsheetId,
+          range: `'${sheetName}'!A:R`,
+          valueInputOption: 'USER_ENTERED',
+          requestBody: {
+            values: [rowValues]
           }
         });
 
