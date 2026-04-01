@@ -21,14 +21,27 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
+  const isTransitioning = useRef(false);
+
   useEffect(() => {
-    if (mode === 'BARCODE') {
-      stopCameraStream();
-      startBarcodeScanner();
-    } else {
-      stopBarcodeScanner();
-      startCameraStream();
-    }
+    const handleModeChange = async () => {
+      if (isTransitioning.current) return;
+      isTransitioning.current = true;
+
+      try {
+        if (mode === 'BARCODE') {
+          stopCameraStream();
+          await startBarcodeScanner();
+        } else {
+          await stopBarcodeScanner();
+          await startCameraStream();
+        }
+      } finally {
+        isTransitioning.current = false;
+      }
+    };
+
+    handleModeChange();
 
     return () => {
       stopBarcodeScanner();
@@ -38,8 +51,20 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
 
   const startBarcodeScanner = async () => {
     try {
+      // Ensure any previous instance is cleaned up
+      if (html5QrCodeRef.current) {
+        try {
+          if (html5QrCodeRef.current.isScanning) {
+            await html5QrCodeRef.current.stop();
+          }
+        } catch (e) {
+          console.warn("Cleanup error:", e);
+        }
+        html5QrCodeRef.current = null;
+      }
+
       // Small delay to ensure the container is in the DOM
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 150));
       
       const html5QrCode = new Html5Qrcode("reader");
       html5QrCodeRef.current = html5QrCode;
@@ -53,10 +78,20 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
       await html5QrCode.start(
         { facingMode: "environment" },
         config,
-        (decodedText) => {
-          html5QrCode.stop().then(() => {
+        async (decodedText) => {
+          if (isTransitioning.current) return;
+          isTransitioning.current = true;
+          try {
+            await html5QrCode.stop();
+            html5QrCodeRef.current = null;
             onScan(decodedText);
-          }).catch(console.error);
+          } catch (err) {
+            console.error("Error stopping after scan:", err);
+            // Still call onScan even if stop fails
+            onScan(decodedText);
+          } finally {
+            isTransitioning.current = false;
+          }
         },
         (errorMessage) => {
           // Ignore frequent scan errors
@@ -70,12 +105,15 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
   };
 
   const stopBarcodeScanner = async () => {
-    if (html5QrCodeRef.current && html5QrCodeRef.current.isScanning) {
+    if (html5QrCodeRef.current) {
       try {
-        await html5QrCodeRef.current.stop();
-        html5QrCodeRef.current = null;
+        if (html5QrCodeRef.current.isScanning) {
+          await html5QrCodeRef.current.stop();
+        }
       } catch (err) {
-        console.error("Error stopping barcode scanner:", err);
+        console.warn("Error stopping barcode scanner:", err);
+      } finally {
+        html5QrCodeRef.current = null;
       }
     }
   };
@@ -120,7 +158,7 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
       const base64Data = imageDataUrl.split(',')[1];
 
       try {
-        const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.GEMINI_API_KEY });
+        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
         const response = await ai.models.generateContent({
           model: "gemini-3-flash-preview",
           contents: {

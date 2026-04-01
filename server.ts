@@ -85,7 +85,7 @@ async function startServer() {
         res.status(500).json({ error: 'Apps Script returned invalid JSON' });
       }
     } catch (error) {
-      console.error('Failed to fetch permissions from Apps Script:', error);
+      logError('Failed to fetch permissions from Apps Script', error);
       res.status(500).json({ error: 'Failed to fetch permissions' });
     }
   });
@@ -111,7 +111,7 @@ async function startServer() {
       });
       res.json({ url });
     } catch (error) {
-      console.error('Failed to generate auth URL:', error);
+      logError('Failed to generate auth URL', error);
       res.status(500).json({ error: 'Failed to generate auth URL' });
     }
   });
@@ -156,7 +156,7 @@ async function startServer() {
         </html>
       `);
     } catch (error) {
-      console.error('OAuth callback error:', error);
+      logError('OAuth callback error', error);
       res.status(500).send('Authentication failed');
     }
   });
@@ -183,9 +183,15 @@ async function startServer() {
   });
 
   // Middleware to check auth
+  const extractSpreadsheetId = (idOrUrl: string): string => {
+    if (!idOrUrl) return '';
+    const match = idOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    return match ? match[1] : idOrUrl;
+  };
+
   const getAuthClient = (req: express.Request) => {
     const tokensCookie = req.cookies.google_tokens;
-    if (tokensCookie) {
+    if (tokensCookie && tokensCookie !== 'undefined' && tokensCookie !== 'null') {
       try {
         const tokens = JSON.parse(tokensCookie);
         const oauth2Client = getOAuthClient();
@@ -197,11 +203,27 @@ async function startServer() {
     }
 
     // Fallback to API Key (only supports read)
-    if (process.env.SHEETS_API_KEY) {
-      return process.env.SHEETS_API_KEY;
+    const apiKey = process.env.SHEETS_API_KEY || process.env.VITE_SHEETS_API_KEY;
+    if (apiKey && 
+        apiKey.trim() !== '' && 
+        apiKey !== 'undefined' && 
+        apiKey !== 'null' && 
+        !apiKey.includes('TODO_') && 
+        !apiKey.includes('YOUR_')) {
+      return apiKey.trim();
     }
 
     return null;
+  };
+
+  const logError = (prefix: string, error: any) => {
+    if (error && error.response && error.response.data) {
+      console.error(`${prefix}:`, JSON.stringify(error.response.data, null, 2));
+    } else if (error instanceof Error) {
+      console.error(`${prefix}:`, error.message);
+    } else {
+      console.error(`${prefix}:`, error);
+    }
   };
 
   app.post('/api/scripts/post', async (req, res) => {
@@ -222,14 +244,18 @@ async function startServer() {
       const data = await response.json();
       res.json(data);
     } catch (error) {
-      console.error('Failed to post to Apps Script:', error);
+      logError('Failed to post to Apps Script', error);
       res.status(500).json({ error: 'Failed to post to Apps Script' });
     }
   });
 
   app.get('/api/sheets/products', async (req, res) => {
-    const { spreadsheetId } = req.query;
-    if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID required' });
+    let { spreadsheetId } = req.query;
+    if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
+      return res.status(400).json({ error: 'Valid Spreadsheet ID required' });
+    }
+    
+    spreadsheetId = extractSpreadsheetId(spreadsheetId as string);
 
     const authClient = getAuthClient(req);
     
@@ -270,7 +296,7 @@ async function startServer() {
 
         return res.json({ products });
       } catch (error) {
-        console.error('Sheets API Error:', error);
+        logError('Sheets API Error', error);
         // Fallback to public fetch if official API fails
       }
     }
@@ -310,14 +336,18 @@ async function startServer() {
 
       res.json({ products });
     } catch (error) {
-      console.error('Public Sync Error:', error);
+      logError('Public Sync Error', error);
       res.status(401).json({ error: 'No authentication configured and public sync failed. Please log in or provide a SHEETS_API_KEY.' });
     }
   });
 
   app.get('/api/sheets/records', async (req, res) => {
-    const { spreadsheetId } = req.query;
-    if (!spreadsheetId) return res.status(400).json({ error: 'Spreadsheet ID required' });
+    let { spreadsheetId } = req.query;
+    if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
+      return res.status(400).json({ error: 'Valid Spreadsheet ID required' });
+    }
+
+    spreadsheetId = extractSpreadsheetId(spreadsheetId as string);
 
     const authClient = getAuthClient(req);
     if (!authClient) return res.status(401).json({ error: 'Authentication required' });
@@ -349,32 +379,39 @@ async function startServer() {
 
           const rows = response.data.values || [];
           const sheetRecords = rows
-            .filter(row => row[1] || row[2]) // Ensure Category or Product Name exist
-            .map((row, index) => ({
-              id: row[0] || `${sheetName}-row-${index}`,
-              category: row[1] || '',
-              productName: row[2] || '',
-              sku: row[3] || '',
-              variant: row[4] || '',
-              barcodeScanned: row[5] || '',
-              originalQuantity: parseFloat(row[6]) || 0,
-              physicalQty: parseFloat(row[7]) || 0,
-              physicalCount: parseFloat(row[8]) || 0,
-              unitType: row[9] || 'Piece',
-              variance: parseFloat(row[10]) || 0,
-              variancePercentage: parseFloat(row[11]) || 0,
-              timestamp: row[12] || new Date().toISOString(),
-              user: row[13] || 'Unknown',
-              auditor: row[14] || '',
-              status: row[15] || 'Pending',
-              mode: row[16] || (sheetName.startsWith('Receiving-') ? 'Receiving' : 'Stocktake'),
-              isNewProduct: row[17] === 'TRUE' || row[17] === 'true' || sheetName.startsWith('New-'),
-              sheetName: sheetName,
-            }));
+            .filter(row => row[3]) // Ensure Product Name exists
+            .map((row, index) => {
+              // Version 19.0 Unified Mapping:
+              // ID: row[0]
+              // Store: row[1]
+              // Product Name: row[3]
+              // Physical/Received: row[9]
+              // Scanner: row[13]
+              // Status: row[14]
+              
+              const isReceiving = sheetName.startsWith('Receiving-');
+              return {
+                id: row[0] || `${sheetName}-row-${index}`,
+                category: row[2] || '', // Assuming Category is row[2]
+                storeLocation: row[1] || '',
+                productName: row[3] || '',
+                variant: row[4] || '',
+                barcode: row[7] || '',
+                originalQuantity: parseFloat(row[8]) || 0,
+                physicalQty: parseFloat(row[9]) || 0,
+                physicalCount: parseFloat(row[9]) || 0,
+                user: row[13] || 'Unknown',
+                status: row[14] || 'Pending',
+                auditor: row[15] || '',
+                timestamp: row[16] || new Date().toISOString(),
+                mode: isReceiving ? 'Receiving' : 'Stocktake',
+                sheetName: sheetName,
+              };
+            });
           
           allRecords = [...allRecords, ...sheetRecords];
         } catch (err) {
-          console.error(`Error fetching from sheet ${sheetName}:`, err);
+          logError(`Error fetching from sheet ${sheetName}`, err);
           // Continue to next sheet
         }
       }
@@ -384,20 +421,23 @@ async function startServer() {
 
       res.json({ records: allRecords });
     } catch (error) {
-      console.error('Fetch Records Error:', error);
+      logError('Fetch Records Error', error);
       res.status(500).json({ error: 'Failed to fetch records from Google Sheets' });
     }
   });
 
   app.post('/api/sheets/records', async (req, res) => {
-    const { spreadsheetId, record } = req.body;
+    let { spreadsheetId, record } = req.body;
     if (!spreadsheetId || !record) return res.status(400).json({ error: 'Missing parameters' });
+
+    spreadsheetId = extractSpreadsheetId(spreadsheetId as string);
 
     // Try to use Apps Script Web App if configured
     const scriptsUrl = process.env.VITE_SCRIPTS_URL || process.env.SCRIPTS_URL;
     if (scriptsUrl) {
       try {
         const payload = {
+          id: record.id,
           spreadsheetId,
           category: record.category || '',
           productName: record.productName || '',
@@ -416,7 +456,8 @@ async function startServer() {
           auditor: record.auditor || '',
           status: record.status,
           sheetName: record.sheetName, // Send sheetName to script
-          update: record.update // Send update flag to script
+          update: record.update, // Send update flag to script
+          storeLocation: record.storeLocation || ''
         };
 
         const response = await fetch(scriptsUrl, {
@@ -427,159 +468,66 @@ async function startServer() {
         if (response.ok) {
           return res.json({ success: true });
         }
-        console.error('Apps Script Error:', await response.text());
+        logError('Apps Script Error', await response.text());
       } catch (error) {
-        console.error('Failed to send to Apps Script:', error);
-      }
-    }
-
-    // Fallback to OAuth if logged in
-    const authClient = getAuthClient(req);
-    if (authClient && typeof authClient !== 'string') {
-      try {
-        const sheets = google.sheets({ version: 'v4', auth: authClient as any });
-
-        // Use the sheetName provided by the record, or calculate it
-        const sheetName = record.sheetName || (() => {
-          const scanDate = new Date(record.timestamp);
-          const dateStr = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
-          let prefix = 'Scan-';
-          if (record.isNewProduct) prefix = 'New-';
-          else if (record.mode === 'Receiving') prefix = 'Receiving-';
-          return `${prefix}${dateStr}`;
-        })();
-
-        // Check if the date-specific sheet exists
-        const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
-        const sheetExists = spreadsheet.data.sheets?.some(s => s.properties?.title === sheetName);
-
-        if (!sheetExists) {
-          await sheets.spreadsheets.batchUpdate({
-            spreadsheetId,
-            requestBody: {
-              requests: [{
-                addSheet: {
-                  properties: { title: sheetName }
-                }
-              }]
-            }
-          });
-
-          await sheets.spreadsheets.values.append({
-            spreadsheetId,
-            range: `'${sheetName}'!A1:R1`,
-            valueInputOption: 'USER_ENTERED',
-            requestBody: {
-              values: [
-                ['ID', 'Category', 'Product Name', 'SKU', 'Variant', 'BarcodeScanned', 'Quantity', 'PhysicalQty', 'Physical Count', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Auditor', 'Status', 'Mode', 'Is New Product']
-              ]
-            }
-          });
-        }
-
-        // If update flag is set, find the row by SKU or Barcode and update it
-        if (record.update) {
-          const response = await sheets.spreadsheets.values.get({
-            spreadsheetId,
-            range: `'${sheetName}'!A:R`,
-          });
-          const rows = response.data.values || [];
-          
-          // Find row by Product Name (column C, index 2) AND Variant (column E, index 4), 
-          // or SKU (column D, index 3) or Barcode (column F, index 5)
-          // Skip header row (index 0)
-          const rowIndex = rows.findIndex((row, i) => {
-            if (i === 0) return false;
-            
-            const rowProductName = (row[2] || '').toString().trim().toLowerCase();
-            const rowVariant = (row[4] || '').toString().trim().toLowerCase();
-            const rowSku = (row[3] || '').toString().trim().toLowerCase();
-            const rowBarcode = (row[5] || '').toString().trim().toLowerCase();
-            
-            const targetProductName = (record.productName || '').toString().trim().toLowerCase();
-            const targetVariant = (record.variant || '').toString().trim().toLowerCase();
-            const targetSku = (record.sku || '').toString().trim().toLowerCase();
-            const targetBarcode = (record.barcodeScanned || '').toString().trim().toLowerCase();
-            
-            return (rowProductName === targetProductName && rowVariant === targetVariant) || 
-                   (rowSku === targetSku && targetSku !== '') || 
-                   (rowBarcode === targetBarcode && targetBarcode !== '');
-          });
-
-          if (rowIndex !== -1) {
-            // Update existing row (rowIndex + 1 because Sheets is 1-indexed)
-            const rowValues = [
-              record.id,
-              record.category || '',
-              record.productName || '',
-              record.sku || '',
-              record.variant || '',
-              record.barcodeScanned || '',
-              record.originalQuantity || 0,
-              record.physicalQty || 0,
-              record.physicalCount || 0,
-              record.unitType || 'Piece',
-              record.variance || 0,
-              record.variancePercentage || 0,
-              record.timestamp || '',
-              record.userEmail || record.user || '',
-              record.auditor || '',
-              record.status || 'Pending',
-              record.mode || '',
-              record.isNewProduct ? 'TRUE' : 'FALSE'
-            ];
-
-            await sheets.spreadsheets.values.update({
-              spreadsheetId,
-              range: `'${sheetName}'!A${rowIndex + 1}:R${rowIndex + 1}`,
-              valueInputOption: 'USER_ENTERED',
-              requestBody: {
-                values: [rowValues]
-              }
-            });
-            return res.json({ success: true, updated: true });
-          }
-        }
-
-        // Default: Append as new row
-        const rowValues = [
-          record.id,
-          record.category || '',
-          record.productName || '',
-          record.sku || '',
-          record.variant || '',
-          record.barcodeScanned || '',
-          record.originalQuantity || 0,
-          record.physicalQty || 0,
-          record.physicalCount || 0,
-          record.unitType || 'Piece',
-          record.variance || 0,
-          record.variancePercentage || 0,
-          record.timestamp || '',
-          record.userEmail || record.user || '',
-          record.auditor || '',
-          record.status || 'Pending',
-          record.mode || '',
-          record.isNewProduct ? 'TRUE' : 'FALSE'
-        ];
-
-        await sheets.spreadsheets.values.append({
-          spreadsheetId,
-          range: `'${sheetName}'!A:R`,
-          valueInputOption: 'USER_ENTERED',
-          requestBody: {
-            values: [rowValues]
-          }
-        });
-
-        return res.json({ success: true });
-      } catch (error) {
-        console.error('Sheets API Error:', error);
-        return res.status(500).json({ error: 'Failed to save record to Google Sheets' });
+        logError('Failed to send to Apps Script', error);
       }
     }
 
     res.status(401).json({ error: 'No authentication configured for writing. Please log in or set up SCRIPTS_URL.' });
+  });
+
+  app.delete('/api/sheets/records', async (req, res) => {
+    const { spreadsheetId, id, sheetName } = req.body;
+    if (!spreadsheetId || !id || !sheetName) {
+      return res.status(400).json({ error: 'Missing required parameters' });
+    }
+
+    const authClient = getAuthClient(req);
+    if (authClient && typeof authClient !== 'string') {
+      try {
+        const sheets = google.sheets({ version: 'v4', auth: authClient as any });
+        
+        // Find the row index
+        const response = await sheets.spreadsheets.values.get({
+          spreadsheetId,
+          range: `'${sheetName}'!A:A`,
+        });
+        const rows = response.data.values || [];
+        const rowIndex = rows.findIndex(row => row[0] === id);
+
+        if (rowIndex !== -1) {
+          // Delete the row using batchUpdate
+          const spreadsheet = await sheets.spreadsheets.get({ spreadsheetId });
+          const sheet = spreadsheet.data.sheets?.find(s => s.properties?.title === sheetName);
+          const sheetId = sheet?.properties?.sheetId;
+
+          if (sheetId !== undefined) {
+            await sheets.spreadsheets.batchUpdate({
+              spreadsheetId,
+              requestBody: {
+                requests: [{
+                  deleteDimension: {
+                    range: {
+                      sheetId,
+                      dimension: 'ROWS',
+                      startIndex: rowIndex,
+                      endIndex: rowIndex + 1
+                    }
+                  }
+                }]
+              }
+            });
+            return res.json({ success: true });
+          }
+        }
+        return res.status(404).json({ error: 'Record not found' });
+      } catch (error) {
+        logError('Sheets API Error (Delete)', error);
+        return res.status(500).json({ error: 'Failed to delete record' });
+      }
+    }
+    res.status(401).json({ error: 'Unauthorized' });
   });
 
   // Vite middleware for development

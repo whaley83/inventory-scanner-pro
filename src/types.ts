@@ -47,4 +47,5 @@ export interface StocktakeRecord {
   mode?: 'Stocktake' | 'Receiving';
   isNewProduct?: boolean;
   sheetName?: string;
+  storeLocation?: string;
 }

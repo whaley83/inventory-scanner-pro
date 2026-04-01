@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck } from 'lucide-react';
+import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 import { Scanner } from '../components/Scanner';
 import { Product, BarcodeAlias, StocktakeRecord, AccessLevel } from '../types';
@@ -17,7 +17,7 @@ interface Props {
   accessLevel: AccessLevel;
 }
 
-type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'ERROR' | 'SUCCESS' | 'COMPLETED';
+type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'NEW_PRODUCT' | 'ERROR' | 'SUCCESS' | 'COMPLETED';
 
 export function StocktakeView({ products, aliases, addProduct, addAlias, addRecord, saveRecordToScript, isSyncing, userEmail, accessLevel }: Props) {
   const [step, setStep] = useState<Step>(() => {
@@ -34,8 +34,44 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
   const [piecesPerBox, setPiecesPerBox] = useState('1');
   const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
   const [isSaving, setIsSaving] = useState(false);
+  const [isFromImage, setIsFromImage] = useState(false);
+  const [stores, setStores] = useState<string[]>([]);
+  const [selectedStore, setSelectedStore] = useState<string>(() => localStorage.getItem('inv_selected_store') || '');
 
   const inputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch stores from permissions
+  useEffect(() => {
+    const fetchStores = async () => {
+      try {
+        const res = await fetch(`/api/auth/permissions?email=${userEmail || ''}`);
+        if (res.ok) {
+          const data = await res.json();
+          console.log('Permissions data:', data);
+          if (data.stores && Array.isArray(data.stores)) {
+            setStores(data.stores);
+          } else if (data.permissions && Array.isArray(data.permissions)) {
+            const uniqueStores = Array.from(new Set(data.permissions.map((p: any) => p.store).filter(Boolean))) as string[];
+            setStores(uniqueStores);
+          } else if (Array.isArray(data)) {
+            const uniqueStores = Array.from(new Set(data.map((p: any) => p.store || p).filter(Boolean))) as string[];
+            setStores(uniqueStores);
+          }
+        }
+      } catch (error) {
+        console.error('Failed to fetch stores:', error);
+      }
+    };
+    fetchStores();
+  }, [userEmail]);
+
+  // Save selected store to localStorage
+  useEffect(() => {
+    if (selectedStore) {
+      localStorage.setItem('inv_selected_store', selectedStore);
+    }
+  }, [selectedStore]);
 
   // Auto-focus input for bluetooth scanners
   useEffect(() => {
@@ -110,60 +146,119 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
     setStep('ERROR');
   };
 
-  const handleAddNewProduct = async () => {
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
     setIsAnalyzing(true);
+    setIsFromImage(true);
+    setStep('SCAN');
+
     try {
+      const reader = new FileReader();
+      const base64Promise = new Promise<string>((resolve) => {
+        reader.onload = () => {
+          const base64 = (reader.result as string).split(',')[1];
+          resolve(base64);
+        };
+      });
+      reader.readAsDataURL(file);
+      const base64Data = await base64Promise;
+
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
-        contents: `Analyze this barcode/SKU: "${barcode}". 
-        Suggest product details for a stocktake app. 
-        Return JSON format with: name, category, description, variantName, sku, barcode, quantity (default to 0).`,
+        contents: [
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType: file.type
+            }
+          },
+          {
+            text: "Identify the product in this image. Extract the barcode number if visible. If not, identify the product name and brand. Return JSON format with: barcode (string, null if not found), productName (string, null if not found), brand (string, null if not found)."
+          }
+        ],
         config: {
           responseMimeType: "application/json",
           responseSchema: {
             type: Type.OBJECT,
             properties: {
-              name: { type: Type.STRING },
-              category: { type: Type.STRING },
-              description: { type: Type.STRING },
-              variantName: { type: Type.STRING },
-              sku: { type: Type.STRING },
-              barcode: { type: Type.STRING },
-              quantity: { type: Type.NUMBER }
-            },
-            required: ["name", "category", "sku", "barcode"]
+              barcode: { type: Type.STRING, nullable: true },
+              productName: { type: Type.STRING, nullable: true },
+              brand: { type: Type.STRING, nullable: true }
+            }
           }
         }
       });
 
-      const suggestedProduct = JSON.parse(response.text);
-      setProduct({
-        ...suggestedProduct,
-        barcode: barcode, // Ensure we use the scanned barcode
-        sku: suggestedProduct.sku || barcode,
-        quantity: 0
-      });
-      setIsNewProduct(true);
-      setStep('COUNT');
+      const result = JSON.parse(response.text);
+      console.log('Vision result:', result);
+
+      if (result.barcode) {
+        setBarcode(result.barcode);
+        // Search for product by barcode
+        const found = products.find(p => 
+          p.barcode === result.barcode || 
+          p.barcode1 === result.barcode || 
+          p.barcode2 === result.barcode || 
+          p.barcode3 === result.barcode
+        );
+
+        if (found) {
+          setProduct(found);
+          setStep('COUNT');
+          setIsFromImage(false);
+          toast.success('Product identified from image!');
+          return;
+        }
+      }
+
+      // If barcode not found or product not found by barcode, try searching by name
+      if (result.productName) {
+        const searchName = result.productName.toLowerCase();
+        const foundByName = products.find(p => 
+          p.name.toLowerCase().includes(searchName) || 
+          (result.brand && p.name.toLowerCase().includes(result.brand.toLowerCase()))
+        );
+
+        if (foundByName) {
+          setBarcode(foundByName.barcode);
+          setProduct(foundByName);
+          setStep('COUNT');
+          setIsFromImage(false);
+          toast.success('Product identified from image!');
+          return;
+        }
+      }
+
+      // If still not found
+      if (result.barcode) {
+        setBarcode(result.barcode);
+      }
+      setStep('ERROR');
+      toast.error('Product Not Found in database.');
     } catch (error) {
-      console.error('AI Analysis failed:', error);
-      toast.error('AI analysis failed. Please enter details manually.');
-      // Fallback to manual entry with basic info
-      setProduct({
-        name: 'New Product',
-        category: 'Miscellaneous',
-        description: '',
-        variantName: '',
-        sku: barcode,
-        barcode: barcode,
-        quantity: 0
-      });
-      setIsNewProduct(true);
-      setStep('COUNT');
+      console.error('Image analysis failed:', error);
+      toast.error('Failed to analyze image.');
     } finally {
       setIsAnalyzing(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
     }
+  };
+
+  const handleAddNewProduct = () => {
+    setProduct({
+      name: '',
+      category: '',
+      description: '',
+      variantName: '',
+      sku: '',
+      barcode: barcode,
+      quantity: 0
+    });
+    setIsNewProduct(true);
+    setStep('NEW_PRODUCT');
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
@@ -216,10 +311,15 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       variancePercentage: variancePercentage,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
-      status: isNewProduct ? 'Pending' : 'Pending', // User requested 'Pending' for new products
+      status: 'Pending',
       mode: mode,
       isNewProduct: isNewProduct,
+      storeLocation: selectedStore,
     };
+
+    if (isNewProduct) {
+      addProduct(product);
+    }
 
     await addRecord(record);
     await saveRecordToScript(record);
@@ -242,6 +342,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
     setPhysicalQty('');
     setUnitType('Piece');
     setPiecesPerBox('');
+    setIsFromImage(false);
   };
 
   return (
@@ -263,6 +364,23 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
           </div>
 
           <div className="w-full space-y-6">
+            <div className="space-y-2">
+              <label className="text-sm font-bold text-gray-700 flex items-center gap-2">
+                <MapPin size={16} />
+                Select Store Location
+              </label>
+              <select
+                value={selectedStore}
+                onChange={(e) => setSelectedStore(e.target.value)}
+                className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0 transition-colors"
+              >
+                <option value="">-- Select Store --</option>
+                {stores.map(store => (
+                  <option key={store} value={store}>{store}</option>
+                ))}
+              </select>
+            </div>
+
             <div className="flex bg-gray-100 p-1 rounded-2xl">
               <button
                 onClick={() => setMode('Stocktake')}
@@ -285,7 +403,13 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
             </div>
 
             <button
-              onClick={() => setStep('SCAN')}
+              onClick={() => {
+                if (!selectedStore) {
+                  toast.error('Please select a store location first');
+                  return;
+                }
+                setStep('SCAN');
+              }}
               className={`w-full py-4 text-white rounded-2xl font-semibold text-xl flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
                 mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
               }`}
@@ -297,7 +421,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       )}
 
       {step === 'SCAN' && (
-        <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300 overflow-y-auto pb-32">
+        <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300 overflow-y-auto pb-24">
           <div className="text-center space-y-2">
             <div className={`p-4 rounded-full inline-block mb-2 ${mode === 'Stocktake' ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600'}`}>
               {mode === 'Stocktake' ? <Package size={48} /> : <Truck size={48} />}
@@ -307,15 +431,44 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
           </div>
 
           <div className="w-full space-y-3">
-            <button
-              onClick={() => setShowScanner(true)}
-              className={`w-full py-4 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
-                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
-              }`}
-            >
-              <Camera size={24} />
-              <span>Open Camera Scanner</span>
-            </button>
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (!selectedStore) {
+                    toast.error('⚠️ Please select a store location first!');
+                    return;
+                  }
+                  setShowScanner(true);
+                }}
+                className={`flex-1 py-4 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
+                  mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
+                }`}
+              >
+                <Camera size={24} />
+                <span>Camera</span>
+              </button>
+              <button
+                onClick={() => {
+                  if (!selectedStore) {
+                    toast.error('⚠️ Please select a store location first!');
+                    return;
+                  }
+                  fileInputRef.current?.click();
+                }}
+                disabled={isAnalyzing}
+                className="flex-1 py-4 bg-white border-2 border-gray-200 text-gray-700 rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-sm hover:bg-gray-50 transition-all active:scale-95 disabled:opacity-50"
+              >
+                {isAnalyzing ? <Loader2 size={24} className="animate-spin" /> : <Upload size={24} />}
+                <span>Upload</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                onChange={handleImageUpload}
+                className="hidden"
+              />
+            </div>
           </div>
 
           <div className="w-full relative">
@@ -387,7 +540,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       )}
 
       {step === 'COUNT' && product && (
-        <div className="flex flex-col h-full animate-in slide-in-from-right-4 duration-300 overflow-y-auto pb-32">
+        <div className="flex flex-col h-full animate-in slide-in-from-right-4 duration-300 overflow-y-auto pb-24">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-xl font-bold text-gray-800">Record Count</h2>
             <button onClick={reset} className="text-sm text-gray-500 hover:text-gray-800 font-medium">Cancel</button>
@@ -497,8 +650,113 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
         </div>
       )}
 
+      {step === 'NEW_PRODUCT' && product && (
+        <div className="flex flex-col h-full animate-in slide-in-from-right-4 duration-300 overflow-y-auto pb-24">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-xl font-bold text-gray-800">New Product Entry</h2>
+            <button onClick={reset} className="text-sm text-gray-500 hover:text-gray-800 font-medium">Cancel</button>
+          </div>
+
+          <form onSubmit={(e) => { e.preventDefault(); setStep('COUNT'); }} className="space-y-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Category</label>
+              <input
+                type="text"
+                required
+                value={product.category}
+                onChange={(e) => setProduct({ ...product, category: e.target.value })}
+                className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                placeholder="e.g. Beverages"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Product Name</label>
+              <input
+                type="text"
+                required
+                value={product.name}
+                onChange={(e) => setProduct({ ...product, name: e.target.value })}
+                className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                placeholder="e.g. Coca Cola"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Variant</label>
+              <input
+                type="text"
+                value={product.variantName}
+                onChange={(e) => setProduct({ ...product, variantName: e.target.value })}
+                className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                placeholder="e.g. 500ml Bottle"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Description</label>
+              <textarea
+                value={product.description}
+                onChange={(e) => setProduct({ ...product, description: e.target.value })}
+                className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                placeholder="Optional description..."
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">SKU</label>
+                <input
+                  type="text"
+                  required
+                  value={product.sku}
+                  onChange={(e) => setProduct({ ...product, sku: e.target.value })}
+                  className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Barcode</label>
+                <input
+                  type="text"
+                  required
+                  value={product.barcode}
+                  onChange={(e) => setProduct({ ...product, barcode: e.target.value })}
+                  className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl text-gray-500"
+                  readOnly
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2 uppercase tracking-wider">Default Unit</label>
+              <div className="flex bg-gray-100 p-1 rounded-xl">
+                <button
+                  type="button"
+                  className={`flex-1 py-3 rounded-lg text-sm font-bold transition-colors ${unitType === 'Piece' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
+                  onClick={() => setUnitType('Piece')}
+                >
+                  Piece
+                </button>
+                <button
+                  type="button"
+                  className={`flex-1 py-3 rounded-lg text-sm font-bold transition-colors ${unitType === 'Box' ? 'bg-white text-gray-900 shadow' : 'text-gray-500 hover:text-gray-700'}`}
+                  onClick={() => setUnitType('Box')}
+                >
+                  Box
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              className={`w-full py-4 text-white rounded-2xl font-bold text-xl shadow-lg transition-all active:scale-95 mt-4 ${
+                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'
+              }`}
+            >
+              Continue to Count
+            </button>
+          </form>
+        </div>
+      )}
+
       {step === 'ERROR' && (
-        <div className="flex flex-col h-full animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto pb-32">
+        <div className="flex flex-col h-full animate-in slide-in-from-bottom-4 duration-300 overflow-y-auto pb-24">
           <div className="text-center mb-8 mt-4">
             <div className="bg-red-100 text-red-600 p-4 rounded-full inline-block mb-4">
               <AlertCircle size={32} />
@@ -549,6 +807,14 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
           </p>
         </div>
       )}
+
+      <input 
+        type="file" 
+        ref={fileInputRef} 
+        onChange={handleImageUpload} 
+        accept="image/*" 
+        className="hidden" 
+      />
     </div>
   );
 }

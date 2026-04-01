@@ -56,30 +56,22 @@ export default function App() {
       // We fetch all permissions to perform a case-insensitive search locally
       const res = await fetch(`/api/auth/permissions`);
       if (res.ok) {
-        const text = await res.text();
         try {
-          const data = JSON.parse(text);
+          const data = await res.json();
           
           let foundUser = null;
           
-          if (Array.isArray(data)) {
-            const emails = data.map(u => typeof u === 'string' ? u : (u?.email || ''));
-            
-            foundUser = data.find(u => {
+          // Handle { users: [], stores: [] } or just an array
+          const usersList = Array.isArray(data) ? data : (data.users || []);
+          
+          if (Array.isArray(usersList)) {
+            foundUser = usersList.find((u: any) => {
               const email = typeof u === 'string' ? u : u?.email;
               return email && typeof email === 'string' && email.trim().toLowerCase() === normalizedLoginEmail;
             });
             
-            // If the script returned an array of strings, foundUser will be the string itself
-            // We need to wrap it in an object with a default accessLevel if it's just a string
             if (foundUser && typeof foundUser === 'string') {
-              foundUser = { email: foundUser, accessLevel: 'Scan Only' }; // Default role
-            }
-          } else if (data.accessLevel) {
-            // Handle single object response if the script only returns one
-            const scriptEmail = data.email || loginEmail; 
-            if (typeof scriptEmail === 'string' && scriptEmail.trim().toLowerCase() === normalizedLoginEmail) {
-              foundUser = data;
+              foundUser = { email: foundUser, accessLevel: 'Scan Only' };
             }
           }
 

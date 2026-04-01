@@ -43,10 +43,14 @@ export function useInventory() {
   const [isSyncing, setIsSyncing] = useState(false);
 
   const fetchProducts = async () => {
-    const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    let spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
+      spreadsheetId = defaultSpreadsheetId;
+    }
+    
     const apiKey = import.meta.env.VITE_SHEETS_API_KEY;
     
-    if (!spreadsheetId || !apiKey) {
+    if (!spreadsheetId || !apiKey || apiKey === 'undefined' || apiKey === 'null') {
       console.warn('Missing VITE_GOOGLE_SHEET_ID or VITE_SHEETS_API_KEY');
       return;
     }
@@ -72,7 +76,11 @@ export function useInventory() {
   };
 
   const fetchRecords = async () => {
-    const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    let spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
+      spreadsheetId = defaultSpreadsheetId;
+    }
+    
     if (!spreadsheetId) return;
 
     try {
@@ -82,12 +90,20 @@ export function useInventory() {
         const data = await res.json();
         if (data.records) {
           // Map to match StocktakeRecord interface if necessary
-          const mappedRecords: StocktakeRecord[] = data.records.map((r: any) => ({
-            ...r,
-            quantity: r.originalQuantity, // Ensure field name matches
-            physicalQty: r.physicalCount, // Ensure field name matches
-            variancePercent: r.variancePercentage * 100 // Convert back to percentage for display if stored as decimal
-          }));
+          const mappedRecords: StocktakeRecord[] = data.records.map((r: any) => {
+            // If variancePercentage is a decimal (e.g. 1.0 for 100%), multiply by 100
+            let vPercent = r.variancePercentage || 0;
+            if (Math.abs(vPercent) <= 2 && vPercent !== 0) {
+              vPercent = vPercent * 100;
+            }
+            
+            return {
+              ...r,
+              quantity: r.originalQuantity, // Ensure field name matches
+              physicalQty: r.physicalQty || r.physicalCount, // Ensure field name matches
+              variancePercent: Math.round(vPercent)
+            };
+          });
           setRecords(mappedRecords);
         }
       }
@@ -180,6 +196,7 @@ export function useInventory() {
               status: record.status,
               mode: record.mode,
               isNewProduct: record.isNewProduct,
+              storeLocation: record.storeLocation || '',
               sheetName, 
               update: true 
             } 
@@ -218,22 +235,77 @@ export function useInventory() {
           category: record.category || '',
           productName: record.productName || '',
           variant: record.variant || '',
+          storeLocation: record.storeLocation || '',
           userEmail: record.user // Explicitly include userEmail as requested
         })
       });
-      return res.ok;
+      if (res.ok) {
+        toast.success('Data Synced to Cloud');
+        return true;
+      }
+      return false;
     } catch (error) {
       console.error('Failed to sync record to script', error);
       return false;
     }
   };
 
-  const updateRecordStatus = (id: string, status: StocktakeRecord['status'], auditor?: string) => {
+  const updateRecordStatus = async (id: string, status: StocktakeRecord['status'], auditor?: string) => {
     setRecords(prev => prev.map(r => r.id === id ? { ...r, status, auditor: auditor || r.auditor } : r));
+    
+    // If the record is already in Google Sheets, update it immediately
+    const record = records.find(r => r.id === id);
+    if (record && record.sheetName) {
+      const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+      try {
+        await fetch('/api/sheets/records', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            spreadsheetId,
+            record: {
+              ...record,
+              status,
+              auditor: auditor || record.auditor,
+              update: true
+            }
+          })
+        });
+        toast.success(`Record ${status}`);
+      } catch (error) {
+        console.error('Failed to update record status on server', error);
+        toast.error('Failed to update record in Google Sheets');
+      }
+    }
   };
 
-  const deleteRecord = (id: string) => {
+  const deleteRecord = async (id: string) => {
+    const record = records.find(r => r.id === id);
     setRecords(prev => prev.filter(r => r.id !== id));
+    
+    // If the record is already in Google Sheets, delete it there too
+    if (record && record.sheetName) {
+      const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+      try {
+        const res = await fetch('/api/sheets/records', {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            spreadsheetId,
+            id,
+            sheetName: record.sheetName
+          })
+        });
+        if (res.ok) {
+          toast.success('Record deleted from Google Sheets');
+        } else {
+          toast.error('Failed to delete record from Google Sheets');
+        }
+      } catch (error) {
+        console.error('Failed to delete record from server', error);
+        toast.error('Error deleting record from Google Sheets');
+      }
+    }
   };
 
   return {
@@ -242,6 +314,11 @@ export function useInventory() {
     records,
     isSyncing,
     sync: async () => {
+      // Force Refresh: Clear local cache
+      localStorage.removeItem('inv_products');
+      localStorage.removeItem('inv_aliases');
+      localStorage.removeItem('inv_records');
+      
       await fetchProducts();
       await fetchRecords();
     },

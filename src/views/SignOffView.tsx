@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { StocktakeRecord, Product } from '../types';
-import { Check, X, FileSpreadsheet, Trash2, AlertTriangle, RefreshCw } from 'lucide-react';
+import { Check, X, FileSpreadsheet, Trash2, AlertTriangle, RefreshCw, MapPin } from 'lucide-react';
 import { toast } from 'sonner';
 
 interface Props {
@@ -48,7 +48,7 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
   };
 
   return (
-    <div className="flex flex-col h-full max-w-5xl mx-auto w-full p-4 relative overflow-y-auto pb-32">
+    <div className="flex flex-col min-h-[600px] mx-auto w-full p-4 relative pb-32">
       {/* Delete Confirmation Modal */}
       {recordToDelete && (
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
@@ -120,14 +120,14 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex-1 flex flex-col">
-        <div className="overflow-x-auto">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex-1 flex flex-col">
+        <div className="overflow-x-auto overflow-y-auto">
           <table className="w-full text-left border-collapse min-w-[1000px]">
             <thead>
               <tr className="bg-gray-50 border-b border-gray-200 text-sm text-gray-600">
                 <th className="p-4 font-medium whitespace-nowrap">Category</th>
+                <th className="p-4 font-medium whitespace-nowrap">Store</th>
                 <th className="p-4 font-medium whitespace-nowrap">Product</th>
-                <th className="p-4 font-medium whitespace-nowrap">Variant</th>
                 <th className="p-4 font-medium whitespace-nowrap">Original Qty</th>
                 <th className="p-4 font-medium whitespace-nowrap">Physical / Received</th>
                 <th className="p-4 font-medium whitespace-nowrap">Variance</th>
@@ -144,6 +144,12 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                     </span>
                   </td>
                   <td className="p-4 whitespace-nowrap">
+                    <div className="flex items-center gap-1 text-xs font-medium text-gray-700">
+                      <MapPin size={12} className="text-gray-400" />
+                      {record.storeLocation || '-'}
+                    </div>
+                  </td>
+                  <td className="p-4 whitespace-nowrap">
                     <div className="flex items-center gap-2">
                       <div className="font-medium text-gray-900">
                         {record.productName || getProductName(record.sku)}
@@ -157,16 +163,6 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                         <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">SCAN</span>
                       )}
                     </div>
-                    <div className="text-xs text-gray-500 font-mono mt-1">{record.sku}</div>
-                  </td>
-                  <td className="p-4 whitespace-nowrap">
-                    {record.variant ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-800">
-                        {record.variant}
-                      </span>
-                    ) : (
-                      <span className="text-gray-400 text-xs">-</span>
-                    )}
                   </td>
                   <td className="p-4 whitespace-nowrap text-gray-600">
                     {record.mode === 'Receiving' ? (
@@ -187,11 +183,14 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                         }`}>
                           {record.variance > 0 ? '+' : ''}{record.variance}
                         </span>
-                        {record.variancePercent !== undefined && record.variance !== 0 && (
+                        {record.variance !== 0 && (
                           <span className={`text-xs font-medium ${
-                            record.variancePercent > 0 ? 'text-green-600' : 'text-red-600'
+                            record.variance > 0 ? 'text-green-600' : 'text-red-600'
                           }`}>
-                            {record.variancePercent > 0 ? '+' : ''}{record.variancePercent}%
+                            {record.variance > 0 ? '+' : ''}
+                            {record.variancePercentage !== undefined 
+                              ? Math.round(record.variancePercentage * 100) 
+                              : Math.round(record.variancePercent || 0)}%
                           </span>
                         )}
                       </div>
@@ -210,17 +209,17 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                         <>
                           <button
                             onClick={() => updateRecordStatus(record.id, 'Approved', userEmail || undefined)}
-                            className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors border border-green-200"
+                            className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors border border-green-200 min-w-[44px] flex items-center justify-center"
                             title="Approve"
                           >
-                            <Check size={18} />
+                            <Check size={36} />
                           </button>
                           <button
                             onClick={() => updateRecordStatus(record.id, 'Declined', userEmail || undefined)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200"
+                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-red-200 min-w-[44px] flex items-center justify-center"
                             title="Decline"
                           >
-                            <X size={18} />
+                            <X size={36} />
                           </button>
                         </>
                       ) : (
@@ -232,10 +231,10 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                       )}
                       <button
                         onClick={() => setRecordToDelete(record.id)}
-                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-200 ml-2"
+                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors border border-transparent hover:border-red-200 ml-2 min-w-[44px] flex items-center justify-center"
                         title="Delete"
                       >
-                        <Trash2 size={18} />
+                        <Trash2 size={36} />
                       </button>
                     </div>
                   </td>
@@ -253,7 +252,7 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
         </div>
       </div>
 
-      {records.length > 0 && (
+      {records.some(r => r.status === 'Pending') && (
         <div className="mt-6">
           <button
             onClick={async () => {
