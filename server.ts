@@ -393,7 +393,7 @@ async function startServer() {
               return {
                 id: row[0] || `${sheetName}-row-${index}`,
                 category: row[2] || '', // Assuming Category is row[2]
-                storeLocation: row[1] || '',
+                storeLocation: row[16] || '',
                 productName: row[3] || '',
                 variant: row[4] || '',
                 barcode: row[7] || '',
