@@ -381,11 +381,12 @@ async function startServer() {
           const sheetRecords = rows
             .filter(row => row[3]) // Ensure Product Name exists
             .map((row, index) => {
-              // Version 19.0 Unified Mapping:
+              // Version 23.0 Unified Mapping:
               // ID: row[0]
               // Store: row[1]
               // Product Name: row[3]
               // Physical/Received: row[9]
+              // Original Qty: row[8]
               // Scanner: row[13]
               // Status: row[14]
               
@@ -393,7 +394,7 @@ async function startServer() {
               return {
                 id: row[0] || `${sheetName}-row-${index}`,
                 category: row[2] || '', // Assuming Category is row[2]
-                storeLocation: row[16] || '',
+                storeLocation: row[1] || '',
                 productName: row[3] || '',
                 variant: row[4] || '',
                 barcode: row[7] || '',

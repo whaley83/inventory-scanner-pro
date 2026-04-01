@@ -173,9 +173,7 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                   </td>
                   <td className="p-4 whitespace-nowrap font-semibold">{record.physicalQty}</td>
                   <td className="p-4 whitespace-nowrap">
-                    {record.mode === 'Receiving' ? (
-                      <span className="text-gray-400 text-xs">-</span>
-                    ) : (
+                    {record.mode !== 'Receiving' && (
                       <div className="flex flex-col gap-1">
                         <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${
                           record.variance === 0 ? 'bg-gray-100 text-gray-800' :
