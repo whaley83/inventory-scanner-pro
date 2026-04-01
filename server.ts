@@ -401,6 +401,8 @@ async function startServer() {
                 originalQuantity: parseFloat(row[8]) || 0,
                 physicalQty: parseFloat(row[9]) || 0,
                 physicalCount: parseFloat(row[9]) || 0,
+                variance: parseFloat(row[11]) || 0,
+                variancePercentage: parseFloat(row[12]) || 0,
                 user: row[13] || 'Unknown',
                 status: row[14] || 'Pending',
                 auditor: row[15] || '',

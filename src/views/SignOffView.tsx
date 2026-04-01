@@ -186,9 +186,7 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                             record.variance > 0 ? 'text-green-600' : 'text-red-600'
                           }`}>
                             {record.variance > 0 ? '+' : ''}
-                            {record.variancePercentage !== undefined 
-                              ? Math.round(record.variancePercentage * 100) 
-                              : Math.round(record.variancePercent || 0)}%
+                            {( (record.variancePercentage !== undefined ? record.variancePercentage : (record.variancePercent || 0) / 100) * 100).toFixed(0)}%
                           </span>
                         )}
                       </div>
