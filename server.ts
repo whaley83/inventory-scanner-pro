@@ -408,6 +408,7 @@ async function startServer() {
                 auditor: row[15] || '',
                 timestamp: row[16] || new Date().toISOString(),
                 mode: isReceiving ? 'Receiving' : 'Stocktake',
+                isNewProduct: sheetName.startsWith('New-'),
                 sheetName: sheetName,
               };
             });
@@ -458,6 +459,7 @@ async function startServer() {
           userEmail: record.userEmail || record.user, // Ensure userEmail is sent as requested
           auditor: record.auditor || '',
           status: record.status,
+          isNewProduct: record.isNewProduct || false,
           sheetName: record.sheetName, // Send sheetName to script
           update: record.update, // Send update flag to script
           storeLocation: record.storeLocation || ''

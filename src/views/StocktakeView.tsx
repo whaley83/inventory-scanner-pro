@@ -257,8 +257,68 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       barcode: barcode,
       quantity: 0
     });
+    setPhysicalQty('');
     setIsNewProduct(true);
     setStep('NEW_PRODUCT');
+  };
+
+  const handleNewProductSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!product || !physicalQty) return;
+
+    setIsSaving(true);
+    
+    let qty = 0;
+    if (unitType === 'Piece') {
+      qty = parseInt(physicalQty, 10);
+    } else {
+      qty = parseInt(physicalQty, 10) * parseInt(piecesPerBox, 10);
+    }
+
+    // For new products, variance is just the quantity since original was 0
+    const variance = qty;
+    const variancePercentage = 1.0; // +100%
+
+    const record: StocktakeRecord = {
+      id: crypto.randomUUID(),
+      sku: product.sku || '',
+      category: product.category,
+      productName: product.name,
+      variant: product.variantName,
+      description: product.description,
+      barcode: product.barcode,
+      barcodeScanned: barcode,
+      quantity: 0,
+      originalQuantity: 0,
+      physicalQty: qty,
+      physicalCount: qty,
+      unitType: unitType,
+      variance: variance,
+      variancePercent: 100,
+      variancePercentage: variancePercentage,
+      timestamp: new Date().toISOString(),
+      user: userEmail || 'Anonymous',
+      status: 'Pending',
+      mode: mode,
+      isNewProduct: true,
+      storeLocation: selectedStore,
+    };
+
+    addProduct(product);
+    await addRecord(record);
+    const success = await saveRecordToScript(record);
+    
+    setIsSaving(false);
+    if (success) {
+      toast.success('New Product Recorded');
+      setStep('LANDING');
+      setBarcode('');
+      setProduct(null);
+      setPhysicalQty('');
+      setUnitType('Piece');
+      setPiecesPerBox('1');
+      setIsFromImage(false);
+    }
   };
 
   const handleManualSubmit = (e: React.FormEvent) => {
@@ -657,7 +717,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
             <button onClick={reset} className="text-sm text-gray-500 hover:text-gray-800 font-medium">Cancel</button>
           </div>
 
-          <form onSubmit={(e) => { e.preventDefault(); setStep('COUNT'); }} className="space-y-4">
+          <form onSubmit={handleNewProductSubmit} className="space-y-4">
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Category</label>
               <input
@@ -684,6 +744,7 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
               <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Variant</label>
               <input
                 type="text"
+                required
                 value={product.variantName}
                 onChange={(e) => setProduct({ ...product, variantName: e.target.value })}
                 className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
@@ -701,10 +762,9 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
             </div>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">SKU</label>
+                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">SKU (Optional)</label>
                 <input
                   type="text"
-                  required
                   value={product.sku}
                   onChange={(e) => setProduct({ ...product, sku: e.target.value })}
                   className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
@@ -721,6 +781,21 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
                   readOnly
                 />
               </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2 uppercase tracking-wider">
+                {mode === 'Stocktake' ? 'Physical Count (Pieces)' : 'Qty Received'}
+              </label>
+              <input
+                type="number"
+                required
+                min="1"
+                value={physicalQty}
+                onChange={(e) => setPhysicalQty(e.target.value)}
+                className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                placeholder="0"
+              />
             </div>
 
             <div>
@@ -745,11 +820,19 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
 
             <button
               type="submit"
-              className={`w-full py-4 text-white rounded-2xl font-bold text-xl shadow-lg transition-all active:scale-95 mt-4 ${
+              disabled={isSaving}
+              className={`w-full py-4 text-white rounded-2xl font-bold text-xl shadow-lg transition-all active:scale-95 mt-4 flex items-center justify-center space-x-2 ${
                 mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'
-              }`}
+              } disabled:opacity-50`}
             >
-              Continue to Count
+              {isSaving ? (
+                <>
+                  <Loader2 size={24} className="animate-spin" />
+                  <span>Saving...</span>
+                </>
+              ) : (
+                <span>Submit New Product</span>
+              )}
             </button>
           </form>
         </div>
