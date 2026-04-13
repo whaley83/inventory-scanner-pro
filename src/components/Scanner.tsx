@@ -1,21 +1,24 @@
 import { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { X, Camera, Type, AlertCircle, Loader2 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
+import { X, Camera, Type, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
+import { GoogleGenAI } from "@google/genai";
 
 interface ScannerProps {
   onScan: (barcode: string) => void;
   onTextScan: (text: string) => void;
+  onAIIdentify: (base64: string) => Promise<void>;
   onClose: () => void;
+  spreadsheetId?: string;
 }
 
-type ScanMode = 'BARCODE' | 'TEXT';
+type ScanMode = 'BARCODE' | 'TEXT' | 'AI';
 
-export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
+export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheetId }: ScannerProps) {
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
   const [mode, setMode] = useState<ScanMode>('BARCODE');
   const [isProcessingText, setIsProcessingText] = useState(false);
+  const [isIdentifying, setIsIdentifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -141,6 +144,51 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
     }
   };
 
+  const captureAndIdentify = async () => {
+    if (!videoRef.current || !canvasRef.current) return;
+
+    setIsIdentifying(true);
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+    const context = canvas.getContext('2d');
+
+    if (context) {
+      // Resize logic: max 1024px
+      const MAX_WIDTH = 1024;
+      const MAX_HEIGHT = 1024;
+      let width = video.videoWidth;
+      let height = video.videoHeight;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      context.drawImage(video, 0, 0, width, height);
+
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      const base64Data = imageDataUrl.split(',')[1];
+
+      try {
+        await onAIIdentify(base64Data);
+      } catch (error) {
+        console.error("AI Identify Error:", error);
+        toast.error("AI could not identify product. Please enter manually.");
+      } finally {
+        setIsIdentifying(false);
+      }
+    }
+  };
+
   const captureAndRecognizeText = async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -150,39 +198,60 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
     const context = canvas.getContext('2d');
 
     if (context) {
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // Resize logic: max 1024px
+      const MAX_WIDTH = 1024;
+      const MAX_HEIGHT = 1024;
+      let width = video.videoWidth;
+      let height = video.videoHeight;
+
+      if (width > height) {
+        if (width > MAX_WIDTH) {
+          height *= MAX_WIDTH / width;
+          width = MAX_WIDTH;
+        }
+      } else {
+        if (height > MAX_HEIGHT) {
+          width *= MAX_HEIGHT / height;
+          height = MAX_HEIGHT;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      context.drawImage(video, 0, 0, width, height);
 
       const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
       const base64Data = imageDataUrl.split(',')[1];
 
       try {
-        const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+        const apiKey = process.env.GEMINI_API_KEY;
+        if (!apiKey || apiKey.includes('TODO') || apiKey.includes('YOUR_API_KEY')) {
+          throw new Error('AI service not configured. Please check your API key in settings.');
+        }
+
+        const ai = new GoogleGenAI({ apiKey });
         const response = await ai.models.generateContent({
           model: "gemini-3-flash-preview",
-          contents: {
-            parts: [
-              {
-                text: `You are a strictly evidentiary product scanner. 
-                Analyze the image for a clear product label, barcode, or identifiable text (SKU, Product Name).
-                
-                RULES:
-                1. If the image does not contain a clear product label, barcode, or identifiable text, return exactly: {"error": "no_product_detected"}.
-                2. Do NOT 'guess' based on background objects, people, or context.
-                3. Only return product data if a SKU, Barcode, or Product Name is clearly legible.
-                4. If found, return the most prominent text found on the label (e.g., the SKU or Product Name).
-                
-                Response format: Return ONLY the text found or the error JSON.`,
-              },
-              {
-                inlineData: {
-                  mimeType: "image/jpeg",
-                  data: base64Data,
-                },
-              },
-            ],
-          },
+          contents: [
+            {
+              text: `You are a strictly evidentiary product scanner. 
+              Analyze the image for a clear product label, barcode, or identifiable text (SKU, Product Name).
+              
+              RULES:
+              1. If the image does not contain a clear product label, barcode, or identifiable text, return exactly: {"error": "no_product_detected"}.
+              2. Do NOT 'guess' based on background objects, people, or context.
+              3. Only return product data if a SKU, Barcode, or Product Name is clearly legible.
+              4. If found, return the most prominent text found on the label (e.g., the SKU or Product Name).
+              
+              Response format: Return ONLY the text found or the error JSON.`
+            },
+            {
+              inlineData: {
+                data: base64Data,
+                mimeType: "image/jpeg"
+              }
+            }
+          ]
         });
 
         const resultText = response.text?.trim() || "";
@@ -227,6 +296,12 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
              onClick={() => setMode('TEXT')}
            >
              <Type size={20} /> Read Text
+           </button>
+           <button 
+             className={`flex-1 py-4 flex items-center justify-center gap-2 font-bold transition-all ${mode === 'AI' ? 'bg-blue-50 text-blue-600 border-b-4 border-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
+             onClick={() => setMode('AI')}
+           >
+             <Sparkles size={20} /> AI Identify
            </button>
         </div>
 
@@ -281,6 +356,43 @@ export function Scanner({ onScan, onTextScan, onClose }: ScannerProps) {
                   {/* Overlay guide for text scanning */}
                   <div className="absolute inset-0 pointer-events-none border-[60px] border-black/40">
                     <div className="w-full h-full border-2 border-white/80 rounded-xl shadow-[0_0_0_1000px_rgba(0,0,0,0.4)]"></div>
+                  </div>
+                </>
+              )}
+
+              {mode === 'AI' && (
+                <>
+                  <video 
+                    ref={videoRef} 
+                    autoPlay 
+                    playsInline 
+                    className="w-full h-full object-cover"
+                  />
+                  <canvas ref={canvasRef} className="hidden" />
+                  
+                  <div className="absolute bottom-6 left-0 right-0 flex justify-center">
+                    <button
+                      onClick={captureAndIdentify}
+                      disabled={isIdentifying}
+                      className="bg-purple-600 text-white px-8 py-4 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
+                    >
+                      {isIdentifying ? (
+                        <>
+                          <Loader2 className="animate-spin" size={20} />
+                          <span>Loading...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={20} />
+                          <span>AI Identify</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  
+                  {/* Overlay guide for AI identification */}
+                  <div className="absolute inset-0 pointer-events-none border-[60px] border-black/40">
+                    <div className="w-full h-full border-2 border-purple-400/80 rounded-xl shadow-[0_0_0_1000px_rgba(0,0,0,0.4)]"></div>
                   </div>
                 </>
               )}

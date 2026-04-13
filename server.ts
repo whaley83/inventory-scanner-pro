@@ -11,7 +11,8 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '10mb' }));
+  app.use(express.urlencoded({ limit: '10mb', extended: true }));
   app.use(cookieParser());
 
   // Request logger
@@ -187,6 +188,39 @@ async function startServer() {
     if (!idOrUrl) return '';
     const match = idOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
     return match ? match[1] : idOrUrl;
+  };
+
+  const fetchProductsInternal = async (spreadsheetId: string, authClient: any) => {
+    try {
+      const sheets = google.sheets({ version: 'v4', auth: authClient as any });
+      const spreadsheet = await sheets.spreadsheets.get({
+        spreadsheetId: spreadsheetId as string,
+      });
+
+      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
+      const targetSheetName = sheetNames.includes('Products') ? 'Products' : sheetNames[0];
+
+      if (!targetSheetName) {
+        throw new Error('No sheets found in the document');
+      }
+
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: spreadsheetId as string,
+        range: `'${targetSheetName}'!A2:J`,
+      });
+
+      const rows = response.data.values || [];
+      return rows.map(row => ({
+        category: row[0] || '',
+        name: row[1] || '',
+        variantName: row[2] || '',
+        sku: row[4] || '',
+        barcode: row[5] || '',
+      }));
+    } catch (error) {
+      console.error('Internal Fetch Products Error:', error);
+      return [];
+    }
   };
 
   const getAuthClient = (req: express.Request) => {

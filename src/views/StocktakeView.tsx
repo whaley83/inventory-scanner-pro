@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin } from 'lucide-react';
+import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Scanner } from '../components/Scanner';
 import { Product, BarcodeAlias, StocktakeRecord, AccessLevel } from '../types';
@@ -79,6 +79,123 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       inputRef.current.focus();
     }
   }, [step, showScanner]);
+
+  const handleAIIdentify = async (data: any) => {
+    // If AI failed to provide basic info, we still try to proceed to NEW_PRODUCT if possible
+    // but we need at least a name or variant to be helpful.
+    const productName = data?.productName || '';
+    const variant = data?.variant || '';
+
+    // Try to find the product in the local list if AI says it's not new
+    if (data?.isNewProduct === false && productName && variant) {
+      const found = products.find(p => 
+        p.name === productName && p.variantName === variant
+      );
+      if (found) {
+        setProduct(found);
+        setBarcode(found.barcode);
+        setStep('COUNT');
+        setShowScanner(false);
+        toast.success('Product identified and matched!');
+        return;
+      }
+    }
+
+    // Fallback to New Product Entry
+    setBarcode(data?.barcode || '');
+    setProduct({
+      name: productName,
+      category: data?.category || 'Vape',
+      description: '',
+      variantName: variant,
+      sku: '',
+      barcode: data?.barcode || '',
+      quantity: 0
+    });
+    setPhysicalQty('');
+    setIsNewProduct(true);
+    setStep('NEW_PRODUCT');
+    setShowScanner(false);
+    
+    if (data?.isNewProduct) {
+      toast.info('Product not in database. AI pre-filled the form for you.');
+    } else if (productName) {
+      toast.success('AI identified product and pre-filled the form!');
+    } else {
+      toast.info('AI could not find a match. Please enter details manually.');
+    }
+  };
+
+  const identifyProductWithAI = async (base64Data: string) => {
+    try {
+      const apiKey = process.env.GEMINI_API_KEY;
+      if (!apiKey || apiKey.includes('TODO') || apiKey.includes('YOUR_API_KEY')) {
+        throw new Error('AI service not configured. Please check your API key in settings.');
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
+      
+      const productListContext = "MASTER PRODUCT LIST (Product Name | Variant):\n" + 
+        products.map(p => `${p.name} | ${p.variantName}`).join('\n');
+
+      const prompt = `Identify the product in this image. 
+      
+      SEARCH INSTRUCTIONS:
+      1. Extract the most prominent flavor/text from the label (e.g., 'Banana Freeze') and the nicotine level (e.g., '50mg').
+      2. PRIORITIZE searching the 'Variant' column (Column C / Index 2) of the provided MASTER PRODUCT LIST for these details.
+      3. If a match is found in the 'Variant' column, return the corresponding 'Product Name' and the FULL 'Variant' string from that row.
+      4. If NO match is found in the MASTER PRODUCT LIST, you MUST still identify the product from the image text.
+      
+      STRICTNESS & FALLBACK RULES:
+      - Do NOT return a match based only on the brand logo (e.g., 'Pod Juice'). 
+      - The match MUST be confirmed by the specific text in the 'Variant' column.
+      - If the flavor/variant is NOT in the master list, set "isNewProduct": true.
+      - Even if "isNewProduct" is true, you MUST fill in "productName", "variant", and "category" based on your best identification of the image.
+      - NEVER return an empty JSON or an error JSON if you can see any text on the product.
+
+      MASTER PRODUCT LIST:
+      ${productListContext}
+
+      Return a JSON object with the following fields:
+      - productName: The name of the product (from the list if matched, or best guess if new).
+      - variant: The full variant string (from the list if matched, or best guess if new).
+      - barcode: The barcode number if visible, otherwise null.
+      - category: A likely category for this product (e.g., 'Vape', 'E-Liquid').
+      - isNewProduct: boolean (true if the flavor/variant is not in the master list).
+
+      Return ONLY the JSON object, no other text.`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        contents: [
+          {
+            text: prompt
+          },
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType: "image/jpeg"
+            }
+          }
+        ],
+        config: {
+          responseMimeType: "application/json"
+        }
+      });
+
+      const result = JSON.parse(response.text);
+      handleAIIdentify(result);
+    } catch (error: any) {
+      console.error('AI Identification Error:', error);
+      if (error?.message?.includes('429')) {
+        toast.error('System busy, please wait 5 seconds and try again.');
+      } else {
+        // Instead of erroring out, we still try to go to New Product step
+        // but with empty fields if the AI failed completely.
+        handleAIIdentify({ isNewProduct: true });
+      }
+    }
+  };
 
   const handleScan = (scannedBarcode: string) => {
     if (step === 'COMPLETED') return;
@@ -163,81 +280,43 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
         };
       });
       reader.readAsDataURL(file);
-      const base64Data = await base64Promise;
+      const base64DataRaw = await base64Promise;
 
-      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
-      const response = await ai.models.generateContent({
-        model: "gemini-3-flash-preview",
-        contents: [
-          {
-            inlineData: {
-              data: base64Data,
-              mimeType: file.type
+      // Resize image before sending to server
+      const resizeImage = (base64: string): Promise<string> => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const MAX_WIDTH = 1024;
+            const MAX_HEIGHT = 1024;
+            let width = img.width;
+            let height = img.height;
+
+            if (width > height) {
+              if (width > MAX_WIDTH) {
+                height *= MAX_WIDTH / width;
+                width = MAX_WIDTH;
+              }
+            } else {
+              if (height > MAX_HEIGHT) {
+                width *= MAX_HEIGHT / height;
+                height = MAX_HEIGHT;
+              }
             }
-          },
-          {
-            text: "Identify the product in this image. Extract the barcode number if visible. If not, identify the product name and brand. Return JSON format with: barcode (string, null if not found), productName (string, null if not found), brand (string, null if not found)."
-          }
-        ],
-        config: {
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              barcode: { type: Type.STRING, nullable: true },
-              productName: { type: Type.STRING, nullable: true },
-              brand: { type: Type.STRING, nullable: true }
-            }
-          }
-        }
-      });
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx?.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', 0.8).split(',')[1]);
+          };
+          img.src = `data:image/jpeg;base64,${base64}`;
+        });
+      };
 
-      const result = JSON.parse(response.text);
-      console.log('Vision result:', result);
+      const base64Data = await resizeImage(base64DataRaw);
 
-      if (result.barcode) {
-        setBarcode(result.barcode);
-        // Search for product by barcode
-        const found = products.find(p => 
-          p.barcode === result.barcode || 
-          p.barcode1 === result.barcode || 
-          p.barcode2 === result.barcode || 
-          p.barcode3 === result.barcode
-        );
-
-        if (found) {
-          setProduct(found);
-          setStep('COUNT');
-          setIsFromImage(false);
-          toast.success('Product identified from image!');
-          return;
-        }
-      }
-
-      // If barcode not found or product not found by barcode, try searching by name
-      if (result.productName) {
-        const searchName = result.productName.toLowerCase();
-        const foundByName = products.find(p => 
-          p.name.toLowerCase().includes(searchName) || 
-          (result.brand && p.name.toLowerCase().includes(result.brand.toLowerCase()))
-        );
-
-        if (foundByName) {
-          setBarcode(foundByName.barcode);
-          setProduct(foundByName);
-          setStep('COUNT');
-          setIsFromImage(false);
-          toast.success('Product identified from image!');
-          return;
-        }
-      }
-
-      // If still not found
-      if (result.barcode) {
-        setBarcode(result.barcode);
-      }
-      setStep('ERROR');
-      toast.error('Product Not Found in database.');
+      await identifyProductWithAI(base64Data);
     } catch (error) {
       console.error('Image analysis failed:', error);
       toast.error('Failed to analyze image.');
@@ -408,7 +487,13 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
   return (
     <div className="flex flex-col h-full max-w-md mx-auto w-full p-4">
       {showScanner && (
-        <Scanner onScan={handleScan} onTextScan={handleTextScan} onClose={() => setShowScanner(false)} />
+        <Scanner 
+          onScan={handleScan} 
+          onTextScan={handleTextScan} 
+          onAIIdentify={identifyProductWithAI}
+          onClose={() => setShowScanner(false)} 
+          spreadsheetId={import.meta.env.VITE_GOOGLE_SHEET_ID || '1bbVxr0BqFlDra2OPSd4o8J8kamWpKi-leG2Ax6wCdPs'}
+        />
       )}
 
       {step === 'LANDING' && (
@@ -516,10 +601,10 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
                   fileInputRef.current?.click();
                 }}
                 disabled={isAnalyzing}
-                className="flex-1 py-4 bg-white border-2 border-gray-200 text-gray-700 rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-sm hover:bg-gray-50 transition-all active:scale-95 disabled:opacity-50"
+                className="flex-1 py-4 bg-white border-2 border-purple-200 text-purple-600 rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-sm hover:bg-purple-50 transition-all active:scale-95 disabled:opacity-50"
               >
-                {isAnalyzing ? <Loader2 size={24} className="animate-spin" /> : <Upload size={24} />}
-                <span>Upload</span>
+                {isAnalyzing ? <Loader2 size={24} className="animate-spin" /> : <Sparkles size={24} />}
+                <span>Smart Upload</span>
               </button>
               <input
                 ref={fileInputRef}
@@ -851,11 +936,9 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
 
           <div className="space-y-3">
             <button
-              onClick={handleAddNewProduct}
+              onClick={() => fileInputRef.current?.click()}
               disabled={isAnalyzing}
-              className={`w-full py-4 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 ${
-                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
-              }`}
+              className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg shadow-purple-200 transition-all active:scale-95 disabled:opacity-50"
             >
               {isAnalyzing ? (
                 <>
@@ -864,10 +947,21 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
                 </>
               ) : (
                 <>
-                  <Plus size={24} />
-                  <span>Add New Product</span>
+                  <Sparkles size={24} />
+                  <span>Ask AI Agent to Identify</span>
                 </>
               )}
+            </button>
+
+            <button
+              onClick={handleAddNewProduct}
+              disabled={isAnalyzing}
+              className={`w-full py-4 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 disabled:opacity-50 ${
+                mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
+              }`}
+            >
+              <Plus size={24} />
+              <span>Add New Product</span>
             </button>
             <button
               onClick={reset}
