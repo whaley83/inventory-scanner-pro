@@ -6,12 +6,16 @@ import { StocktakeView } from './views/StocktakeView';
 import { ProductsView } from './views/ProductsView';
 import { SignOffView } from './views/SignOffView';
 import { SettingsView } from './views/SettingsView';
-import { User, AccessLevel } from './types';
+import { User, AccessLevel, Product } from './types';
 
 type Tab = 'SCAN' | 'PRODUCTS' | 'SIGNOFF' | 'SETTINGS';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>('SCAN');
+  const [externalProductAction, setExternalProductAction] = useState<{
+    product: Product;
+    mode: 'Stocktake' | 'Receiving';
+  } | null>(null);
   const [user, setUser] = useState<User | null>(() => {
     const saved = localStorage.getItem('inv_user');
     return saved ? JSON.parse(saved) : null;
@@ -220,12 +224,18 @@ export default function App() {
             isSyncing={inventory.isSyncing}
             userEmail={user.email}
             accessLevel={accessLevel}
+            externalProductAction={externalProductAction}
+            onClearExternalAction={() => setExternalProductAction(null)}
           />
         )}
         {activeTab === 'PRODUCTS' && (
           <ProductsView 
             products={inventory.products} 
             aliases={inventory.aliases} 
+            onStartAction={(product, mode) => {
+              setExternalProductAction({ product, mode });
+              setActiveTab('SCAN');
+            }}
           />
         )}
         {activeTab === 'SIGNOFF' && canSignOff && (

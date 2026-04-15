@@ -15,11 +15,28 @@ interface Props {
   isSyncing: boolean;
   userEmail: string | null;
   accessLevel: AccessLevel;
+  externalProductAction?: {
+    product: Product;
+    mode: 'Stocktake' | 'Receiving';
+  } | null;
+  onClearExternalAction?: () => void;
 }
 
 type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'NEW_PRODUCT' | 'ERROR' | 'SUCCESS' | 'COMPLETED';
 
-export function StocktakeView({ products, aliases, addProduct, addAlias, addRecord, saveRecordToScript, isSyncing, userEmail, accessLevel }: Props) {
+export function StocktakeView({ 
+  products, 
+  aliases, 
+  addProduct, 
+  addAlias, 
+  addRecord, 
+  saveRecordToScript, 
+  isSyncing, 
+  userEmail, 
+  accessLevel,
+  externalProductAction,
+  onClearExternalAction
+}: Props) {
   const [step, setStep] = useState<Step>(() => {
     const isCompleted = localStorage.getItem('inv_stocktake_completed') === 'true';
     return isCompleted ? 'COMPLETED' : 'LANDING';
@@ -79,6 +96,24 @@ export function StocktakeView({ products, aliases, addProduct, addAlias, addReco
       inputRef.current.focus();
     }
   }, [step, showScanner]);
+
+  // Handle external product action (from Products tab)
+  useEffect(() => {
+    if (externalProductAction) {
+      const { product, mode } = externalProductAction;
+      setProduct(product);
+      setBarcode(product.barcode);
+      setMode(mode);
+      setStep('COUNT');
+      setShowScanner(false);
+      setIsNewProduct(false);
+      
+      // Clear the action so it doesn't trigger again
+      if (onClearExternalAction) {
+        onClearExternalAction();
+      }
+    }
+  }, [externalProductAction, onClearExternalAction]);
 
   const handleAIIdentify = async (data: any) => {
     // If AI failed to provide basic info, we still try to proceed to NEW_PRODUCT if possible
