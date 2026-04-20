@@ -73,9 +73,17 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       html5QrCodeRef.current = html5QrCode;
 
       const config = { 
-        fps: 10, 
-        qrbox: { width: 250, height: 150 },
-        aspectRatio: 1.0
+        fps: 20, 
+        qrbox: (viewWidth: number, viewHeight: number) => {
+          const boxWidth = viewWidth * 0.95;
+          const boxHeight = Math.min(boxWidth * 0.6, viewHeight * 0.9);
+          return { width: Math.floor(boxWidth), height: Math.floor(boxHeight) };
+        },
+        aspectRatio: 1.0,
+        disableFlip: false,
+        videoConstraints: {
+          facingMode: "environment",
+        }
       };
 
       await html5QrCode.start(
@@ -100,6 +108,14 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
           // Ignore frequent scan errors
         }
       );
+      
+      // Apply object-fit contain to ensure full frame is visible
+      const videoElement = document.querySelector('#reader video') as HTMLVideoElement;
+      if (videoElement) {
+        videoElement.style.objectFit = 'contain';
+        videoElement.style.width = '100%';
+        videoElement.style.height = 'auto';
+      }
       setError(null);
     } catch (err) {
       console.error("Error starting barcode scanner:", err);
@@ -124,7 +140,12 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
   const startCameraStream = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' }
+        video: { 
+          facingMode: 'environment',
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+          aspectRatio: { ideal: 1.7777777778 }
+        }
       });
       streamRef.current = stream;
       if (videoRef.current) {
@@ -305,7 +326,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
            </button>
         </div>
 
-        <div className="relative w-full bg-black aspect-square flex items-center justify-center overflow-hidden">
+        <div className="relative w-full bg-black min-h-[300px] flex items-center justify-center overflow-hidden">
           {error ? (
             <div className="p-8 text-center text-white flex flex-col items-center gap-4">
               <AlertCircle size={48} className="text-red-500" />
@@ -320,7 +341,26 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
           ) : (
             <>
               {mode === 'BARCODE' && (
-                 <div id="reader" className="w-full h-full"></div>
+                <div className="relative w-full h-full">
+                  <div id="reader" className="w-full h-auto min-h-[300px]"></div>
+                  
+                  {/* Overlay guide for barcode - Matches the 95% config */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[95%] aspect-[5/3] relative">
+                      {/* Shading */}
+                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl"></div>
+                      
+                      {/* Corners - White larger borders */}
+                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
+                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
+                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
+                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
+                      
+                      {/* Scanning line animation */}
+                      <div className="absolute top-0 left-0 right-0 h-[2px] bg-red-500/50 animate-scan shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div>
+                    </div>
+                  </div>
+                </div>
               )}
               
               {mode === 'TEXT' && (
@@ -329,7 +369,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                   <canvas ref={canvasRef} className="hidden" />
                   
@@ -353,9 +393,18 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
                     </button>
                   </div>
                   
-                  {/* Overlay guide for text scanning */}
-                  <div className="absolute inset-0 pointer-events-none border-[60px] border-black/40">
-                    <div className="w-full h-full border-2 border-white/80 rounded-xl shadow-[0_0_0_1000px_rgba(0,0,0,0.4)]"></div>
+                  {/* Overlay guide for text scanning - Rectangular 95% width with 5:3 aspect ratio */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[95%] aspect-[5/3] relative">
+                      {/* Shading */}
+                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl border border-white/20"></div>
+                      
+                      {/* Corners - White larger borders */}
+                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
+                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
+                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
+                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
+                    </div>
                   </div>
                 </>
               )}
@@ -366,7 +415,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
-                    className="w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                   <canvas ref={canvasRef} className="hidden" />
                   
@@ -390,9 +439,18 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
                     </button>
                   </div>
                   
-                  {/* Overlay guide for AI identification */}
-                  <div className="absolute inset-0 pointer-events-none border-[60px] border-black/40">
-                    <div className="w-full h-full border-2 border-purple-400/80 rounded-xl shadow-[0_0_0_1000px_rgba(0,0,0,0.4)]"></div>
+                  {/* Overlay guide for AI identification - Rectangular 95% width with 5:3 aspect ratio */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[95%] aspect-[5/3] relative">
+                      {/* Shading */}
+                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl border border-purple-400/30"></div>
+                      
+                      {/* Corners - White larger borders (keeping high visibility) */}
+                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
+                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
+                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
+                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
+                    </div>
                   </div>
                 </>
               )}
