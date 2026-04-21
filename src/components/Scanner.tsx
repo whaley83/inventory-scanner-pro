@@ -5,8 +5,8 @@ import { toast } from 'sonner';
 import { GoogleGenAI } from "@google/genai";
 
 interface ScannerProps {
-  onScan: (barcode: string) => void;
-  onTextScan: (text: string) => void;
+  onScan: (barcode: string, base64Image?: string) => void;
+  onTextScan: (text: string, base64Image?: string) => void;
   onAIIdentify: (base64: string) => Promise<void>;
   onClose: () => void;
   spreadsheetId?: string;
@@ -93,12 +93,25 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
           if (isTransitioning.current) return;
           isTransitioning.current = true;
           try {
+            // Capture frame before stopping
+            let base64Image: string | undefined;
+            const video = document.querySelector('#reader video') as HTMLVideoElement;
+            if (video && canvasRef.current) {
+              const canvas = canvasRef.current;
+              const context = canvas.getContext('2d');
+              if (context) {
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+                context.drawImage(video, 0, 0);
+                base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+              }
+            }
+
             await html5QrCode.stop();
             html5QrCodeRef.current = null;
-            onScan(decodedText);
+            onScan(decodedText, base64Image);
           } catch (err) {
             console.error("Error stopping after scan:", err);
-            // Still call onScan even if stop fails
             onScan(decodedText);
           } finally {
             isTransitioning.current = false;
@@ -280,7 +293,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
         if (resultText.includes('no_product_detected')) {
           toast.error("No product detected. Please point the camera at a label");
         } else if (resultText) {
-          onTextScan(resultText);
+          onTextScan(resultText, base64Data);
         } else {
           toast.error("No text found. Please try again.");
         }
@@ -343,6 +356,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
               {mode === 'BARCODE' && (
                 <div className="relative w-full h-full">
                   <div id="reader" className="w-full h-auto min-h-[300px]"></div>
+                  <canvas ref={canvasRef} className="hidden" />
                   
                   {/* Overlay guide for barcode - Matches the 95% config */}
                   <div className="absolute inset-0 pointer-events-none flex items-center justify-center">

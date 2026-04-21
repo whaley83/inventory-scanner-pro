@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin, Sparkles } from 'lucide-react';
+import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin, Sparkles, X } from 'lucide-react';
 import { toast } from 'sonner';
 import { Scanner } from '../components/Scanner';
 import { Product, BarcodeAlias, StocktakeRecord, AccessLevel } from '../types';
@@ -48,6 +48,9 @@ export function StocktakeView({
   const [mode, setMode] = useState<'Stocktake' | 'Receiving'>('Stocktake');
   const [isNewProduct, setIsNewProduct] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [lastScannedImage, setLastScannedImage] = useState<string | null>(null);
+  const [lastScannedText, setLastScannedText] = useState<string>('');
+  const [candidates, setCandidates] = useState<Product[]>([]);
   const [piecesPerBox, setPiecesPerBox] = useState('1');
   const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
   const [isSaving, setIsSaving] = useState(false);
@@ -116,52 +119,74 @@ export function StocktakeView({
   }, [externalProductAction, onClearExternalAction]);
 
   const handleAIIdentify = async (data: any) => {
-    // If AI failed to provide basic info, we still try to proceed to NEW_PRODUCT if possible
-    // but we need at least a name or variant to be helpful.
     const productName = data?.productName || '';
     const variant = data?.variant || '';
+    const confidence = data?.confidence || (data?.isNewProduct ? 'none' : 'high');
 
-    // Try to find the product in the local list if AI says it's not new
-    if (data?.isNewProduct === false && productName && variant) {
+    // 1. High Confidence Match (Exact or Semantic)
+    if (confidence === 'high' && productName && variant) {
       const found = products.find(p => 
-        p.name === productName && p.variantName === variant
+        (p.name.toLowerCase() === productName.toLowerCase() && p.variantName.toLowerCase() === variant.toLowerCase()) ||
+        (`${p.name} ${p.variantName}`.toLowerCase() === `${productName} ${variant}`.toLowerCase())
       );
       if (found) {
         setProduct(found);
         setBarcode(found.barcode);
         setStep('COUNT');
         setShowScanner(false);
-        toast.success('Product identified and matched!');
+        setCandidates([]);
+        toast.success(`Matched: ${found.name} (${found.variantName})`);
         return;
       }
     }
 
-    // Fallback to New Product Entry
-    setBarcode(data?.barcode || '');
+    // 2. Ambiguous Match (Multiple Candidates)
+    if (confidence === 'ambiguous' && data?.candidates?.length > 0) {
+      // Cross-reference candidates with actual product list to ensure we have full objects
+      const matchedCandidates = data.candidates.map((c: any) => {
+        return products.find(p => 
+          (p.name.toLowerCase() === c.productName?.toLowerCase() && p.variantName.toLowerCase() === c.variant?.toLowerCase())
+        );
+      }).filter(Boolean);
+
+      if (matchedCandidates.length > 0) {
+        setCandidates(matchedCandidates);
+        setShowScanner(false);
+        // We stay in SCAN or go to a special AMBIGUOUS step, but let's keep it simple
+        // If we have candidates, we'll show them in the UI
+        toast.info(`Found ${matchedCandidates.length} possible matches. Please select one.`);
+        return;
+      }
+    }
+
+    // 3. No Match or AI forced New Product
+    // Use Smart Pre-fill for NEW_PRODUCT
+    setBarcode(data?.barcode || barcode || lastScannedText || '');
     setProduct({
       name: productName,
       category: data?.category || 'Vape',
-      description: '',
+      description: data?.description || '',
       variantName: variant,
-      sku: '',
-      barcode: data?.barcode || '',
+      sku: data?.sku || '',
+      barcode: data?.barcode || barcode || lastScannedText || '',
       quantity: 0
     });
     setPhysicalQty('');
     setIsNewProduct(true);
     setStep('NEW_PRODUCT');
     setShowScanner(false);
+    setCandidates([]);
     
-    if (data?.isNewProduct) {
-      toast.info('Product not in database. AI pre-filled the form for you.');
-    } else if (productName) {
-      toast.success('AI identified product and pre-filled the form!');
+    if (confidence === 'none') {
+      toast.info('AI could not find a match. Pre-filled form with extracted info.');
     } else {
-      toast.info('AI could not find a match. Please enter details manually.');
+      toast.info('Smart pre-fill applied for new product entry.');
     }
   };
 
-  const identifyProductWithAI = async (base64Data: string) => {
+  const identifyProductWithAI = async (base64Data: string, textHint: string = '') => {
+    setIsAnalyzing(true);
+    setLastScannedImage(base64Data);
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey.includes('TODO') || apiKey.includes('YOUR_API_KEY')) {
@@ -170,74 +195,71 @@ export function StocktakeView({
 
       const ai = new GoogleGenAI({ apiKey });
       
-      const productListContext = "MASTER PRODUCT LIST (Product Name | Variant):\n" + 
-        products.map(p => `${p.name} | ${p.variantName}`).join('\n');
+      const productListContext = products.map(p => `- ${p.name} | ${p.variantName}`).join('\n');
 
-      const prompt = `Identify the product in this image. 
+      const prompt = `You are a semantic product matcher for an inventory system.
       
-      SEARCH INSTRUCTIONS:
-      1. Extract the most prominent flavor/text from the label (e.g., 'Banana Freeze') and the nicotine level (e.g., '50mg').
-      2. PRIORITIZE searching the 'Variant' column (Column C / Index 2) of the provided MASTER PRODUCT LIST for these details.
-      3. If a match is found in the 'Variant' column, return the corresponding 'Product Name' and the FULL 'Variant' string from that row.
-      4. If NO match is found in the MASTER PRODUCT LIST, you MUST still identify the product from the image text.
+      TASK: Identify the product in the image and match it to the MASTER PRODUCT LIST.
       
-      STRICTNESS & FALLBACK RULES:
-      - Do NOT return a match based only on the brand logo (e.g., 'Pod Juice'). 
-      - The match MUST be confirmed by the specific text in the 'Variant' column.
-      - If the flavor/variant is NOT in the master list, set "isNewProduct": true.
-      - Even if "isNewProduct" is true, you MUST fill in "productName", "variant", and "category" based on your best identification of the image.
-      - NEVER return an empty JSON or an error JSON if you can see any text on the product.
-
-      MASTER PRODUCT LIST:
+      INPUTS:
+      1. Image of product/barcode.
+      2. Text Hint (if available): "${textHint}"
+      
+      MASTER PRODUCT LIST (Product Name | Variant):
       ${productListContext}
-
-      Return a JSON object with the following fields:
-      - productName: The name of the product (from the list if matched, or best guess if new).
-      - variant: The full variant string (from the list if matched, or best guess if new).
-      - barcode: The barcode number if visible, otherwise null.
-      - category: A likely category for this product (e.g., 'Vape', 'E-Liquid').
-      - isNewProduct: boolean (true if the flavor/variant is not in the master list).
-
-      Return ONLY the JSON object, no other text.`;
+      
+      RULES:
+      1. SEMANTIC MATCHING: Look for the most semantically similar item. "Wenax Q Pro" is the same as "WENAX Q PRO". 
+      2. FUZZY SEARCH: If its "Moonlit Silver" on the box but "Moonlit Silver (2ml)" in the list, its a match.
+      3. CONFIDENCE SCORING:
+         - "high": Only one definitive match found in the list.
+         - "ambiguous": Multiple variants for the same product exist in the list (e.g., same flavor but different nicotine levels or colors), and you aren't 100% sure which one it is.
+         - "none": No similar product exists in the list.
+      4. If "ambiguous", provide up to 5 best matches in the "candidates" field.
+      5. If "high" or "none", still provide "productName" and "variant" based on identification.
+      
+      STRICT JSON RESPONSE FORMAT:
+      {
+        "confidence": "high" | "ambiguous" | "none",
+        "productName": "string",
+        "variant": "string",
+        "candidates": [{ "productName": "string", "variant": "string" }],
+        "barcode": "string or null",
+        "category": "string",
+        "isNewProduct": boolean
+      }
+      
+      Return ONLY the JSON.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
-          {
-            text: prompt
-          },
-          {
-            inlineData: {
-              data: base64Data,
-              mimeType: "image/jpeg"
-            }
-          }
+          { text: prompt },
+          { inlineData: { data: base64Data, mimeType: "image/jpeg" } }
         ],
-        config: {
-          responseMimeType: "application/json"
-        }
+        config: { responseMimeType: "application/json" }
       });
 
       const result = JSON.parse(response.text);
       handleAIIdentify(result);
     } catch (error: any) {
       console.error('AI Identification Error:', error);
-      if (error?.message?.includes('429')) {
-        toast.error('System busy, please wait 5 seconds and try again.');
-      } else {
-        // Instead of erroring out, we still try to go to New Product step
-        // but with empty fields if the AI failed completely.
-        handleAIIdentify({ isNewProduct: true });
-      }
+      toast.error('AI identification failed. Please enter manually.');
+      handleAddNewProduct(); // Fallback to manual entry with current state
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
-  const handleScan = (scannedBarcode: string) => {
+  const handleScan = (scannedBarcode: string, base64Image?: string) => {
     if (step === 'COMPLETED') return;
     if (!scannedBarcode.trim()) return;
     
     setBarcode(scannedBarcode);
+    setLastScannedText(scannedBarcode);
+    if (base64Image) setLastScannedImage(base64Image);
     setShowScanner(false);
+    setCandidates([]);
     
     // Check primary barcode first
     let prodByBarcode = products.find(p => p.barcode === scannedBarcode);
@@ -267,11 +289,14 @@ export function StocktakeView({
     setStep('ERROR');
   };
 
-  const handleTextScan = (scannedText: string) => {
+  const handleTextScan = (scannedText: string, base64Image?: string) => {
     if (step === 'COMPLETED') return;
     if (!scannedText.trim()) return;
     
+    setLastScannedText(scannedText);
+    if (base64Image) setLastScannedImage(base64Image);
     setShowScanner(false);
+    setCandidates([]);
     
     // Simple logic: check if the scanned text contains any of the barcodes or SKUs
     const lowerText = scannedText.toLowerCase();
@@ -362,13 +387,14 @@ export function StocktakeView({
   };
 
   const handleAddNewProduct = () => {
+    // If we have some text from a failed scan, use it as a starting point
     setProduct({
-      name: '',
+      name: lastScannedText || '',
       category: '',
       description: '',
       variantName: '',
       sku: '',
-      barcode: barcode,
+      barcode: barcode || lastScannedText || '',
       quantity: 0
     });
     setPhysicalQty('');
@@ -529,6 +555,67 @@ export function StocktakeView({
           onClose={() => setShowScanner(false)} 
           spreadsheetId={import.meta.env.VITE_GOOGLE_SHEET_ID || '1bbVxr0BqFlDra2OPSd4o8J8kamWpKi-leG2Ax6wCdPs'}
         />
+      )}
+
+      {candidates.length > 0 && (
+        <div className="fixed inset-0 z-[110] bg-black/80 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
+            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
+              <h3 className="font-bold text-gray-900">Select Variant</h3>
+              <button 
+                onClick={() => setCandidates([])} 
+                className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-100 rounded-lg transition-colors"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-4">
+              <p className="text-sm text-gray-500 mb-4 text-center italic">
+                "I found <strong>{candidates[0].name}</strong>. Which variant is this?"
+              </p>
+              <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
+                {candidates.map((c, i) => (
+                  <button
+                    key={i}
+                    onClick={() => {
+                      setProduct(c);
+                      setBarcode(c.barcode);
+                      setStep('COUNT');
+                      setCandidates([]);
+                    }}
+                    className="w-full text-left p-4 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition-all flex items-center justify-between group"
+                  >
+                    <div>
+                      <div className="font-bold text-gray-900 group-hover:text-blue-700">{c.variantName}</div>
+                      <div className="text-xs text-gray-500 font-mono mt-1">SKU: {c.sku}</div>
+                    </div>
+                    <ArrowRight size={18} className="text-gray-300 group-hover:text-blue-500" />
+                  </button>
+                ))}
+              </div>
+              <button
+                onClick={() => {
+                  const first = candidates[0];
+                  setProduct({
+                    name: first.name,
+                    category: first.category,
+                    description: '',
+                    variantName: '',
+                    sku: '',
+                    barcode: barcode || '',
+                    quantity: 0
+                  });
+                  setIsNewProduct(true);
+                  setStep('NEW_PRODUCT');
+                  setCandidates([]);
+                }}
+                className="w-full mt-4 py-3 text-center text-sm font-bold text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
+              >
+                None of these, add as new product
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {step === 'LANDING' && (
@@ -971,7 +1058,13 @@ export function StocktakeView({
 
           <div className="space-y-3">
             <button
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                if (lastScannedImage) {
+                  identifyProductWithAI(lastScannedImage, barcode || lastScannedText);
+                } else {
+                   fileInputRef.current?.click();
+                }
+              }}
               disabled={isAnalyzing}
               className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg shadow-purple-200 transition-all active:scale-95 disabled:opacity-50"
             >
