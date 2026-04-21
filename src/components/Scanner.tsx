@@ -6,18 +6,16 @@ import { GoogleGenAI } from "@google/genai";
 
 interface ScannerProps {
   onScan: (barcode: string, base64Image?: string) => void;
-  onTextScan: (text: string, base64Image?: string) => void;
   onAIIdentify: (base64: string) => Promise<void>;
   onClose: () => void;
   spreadsheetId?: string;
 }
 
-type ScanMode = 'BARCODE' | 'TEXT' | 'AI';
+type ScanMode = 'BARCODE' | 'AI';
 
-export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheetId }: ScannerProps) {
+export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: ScannerProps) {
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
   const [mode, setMode] = useState<ScanMode>('BARCODE');
-  const [isProcessingText, setIsProcessingText] = useState(false);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [resetKey, setResetKey] = useState(0);
@@ -33,7 +31,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       isTransitioning.current = true;
 
       try {
-        await stopAllResources();
+        await stopScanner();
         
         // Delay to allow OS to release camera hardware
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -51,12 +49,12 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
     handleModeChange();
 
     return () => {
-      stopAllResources();
+      stopScanner();
     };
   }, [mode, resetKey]);
 
-  const stopAllResources = async () => {
-    // Stop barcode scanner
+  const stopScanner = async () => {
+    // 1. Explicitly stop barcode scanner library
     if (html5QrCodeRef.current) {
       try {
         if (html5QrCodeRef.current.isScanning) {
@@ -69,25 +67,31 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       }
     }
 
-    // Stop camera streams
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop();
-        console.log("Stopped track:", track.label);
-      });
-      streamRef.current = null;
-    }
+    // 2. Kill all active media tracks to prevent hardware locks
+    const activeStream = streamRef.current || (videoRef.current?.srcObject as MediaStream);
+    const scannerVideo = document.querySelector('#reader video') as HTMLVideoElement;
+    const scannerStream = scannerVideo?.srcObject as MediaStream;
 
-    if (videoRef.current) {
-      videoRef.current.srcObject = null;
-    }
+    const streamsToStop = [activeStream, scannerStream].filter(Boolean);
+    
+    streamsToStop.forEach(stream => {
+      stream!.getTracks().forEach(track => {
+        track.stop();
+        console.log("Explicitly stopped track:", track.label);
+      });
+    });
+
+    // 3. Nullify references
+    streamRef.current = null;
+    if (videoRef.current) videoRef.current.srcObject = null;
+    if (scannerVideo) scannerVideo.srcObject = null;
   };
 
-  const resetCamera = () => {
-    stopAllResources().then(() => {
-      setResetKey(prev => prev + 1);
-      toast.info("Camera resetting...");
-    });
+  const resetCamera = async () => {
+    await stopScanner();
+    await new Promise(resolve => setTimeout(resolve, 500));
+    setResetKey(prev => prev + 1);
+    toast.info("Camera resetting...");
   };
 
   const startBarcodeScanner = async () => {
@@ -105,15 +109,16 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
           const boxHeight = Math.min(boxWidth * 0.6, viewHeight * 0.9);
           return { width: Math.floor(boxWidth), height: Math.floor(boxHeight) };
         },
-        aspectRatio: 1.0,
+        aspectRatio: undefined,
         disableFlip: false,
         videoConstraints: {
-          facingMode: { exact: "environment" },
+          facingMode: "environment",
+          width: { ideal: 1280 }
         }
       };
 
       await html5QrCode.start(
-        { facingMode: { exact: "environment" } },
+        { facingMode: "environment" },
         config,
         async (decodedText) => {
           if (isTransitioning.current) return;
@@ -133,7 +138,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
               }
             }
 
-            await stopAllResources();
+            await stopScanner();
             onScan(decodedText, base64Image);
           } catch (err) {
             console.error("Error stopping after scan:", err);
@@ -157,7 +162,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       setError(null);
     } catch (err) {
       console.error("Error starting barcode scanner:", err);
-      setError("Please check if the back camera is available and not in use by another app.");
+      setError("Camera not found or already in use. Please check your browser permissions.");
     }
   };
 
@@ -165,9 +170,8 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
     try {
       const constraints = {
         video: { 
-          facingMode: { exact: "environment" },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
+          facingMode: "environment",
+          width: { ideal: 1280 }
         }
       };
 
@@ -178,8 +182,8 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       }
       setError(null);
     } catch (err) {
-      console.error("Error accessing camera for text scan:", err);
-      setError("Please check if the back camera is available and not in use.");
+      console.error("Error accessing camera for identification:", err);
+      setError("Camera not found or already in use. Please check your browser permissions.");
     }
   };
 
@@ -219,94 +223,15 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
 
       try {
         await onAIIdentify(base64Data);
+        await stopScanner();
+        onClose();
       } catch (error) {
         console.error("AI Identify Error:", error);
         toast.error("AI could not identify product. Please enter manually.");
+        await stopScanner();
+        onClose();
       } finally {
         setIsIdentifying(false);
-      }
-    }
-  };
-
-  const captureAndRecognizeText = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
-
-    setIsProcessingText(true);
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    const context = canvas.getContext('2d');
-
-    if (context) {
-      // Resize logic: max 1024px
-      const MAX_WIDTH = 1024;
-      const MAX_HEIGHT = 1024;
-      let width = video.videoWidth;
-      let height = video.videoHeight;
-
-      if (width > height) {
-        if (width > MAX_WIDTH) {
-          height *= MAX_WIDTH / width;
-          width = MAX_WIDTH;
-        }
-      } else {
-        if (height > MAX_HEIGHT) {
-          width *= MAX_HEIGHT / height;
-          height = MAX_HEIGHT;
-        }
-      }
-
-      canvas.width = width;
-      canvas.height = height;
-      context.drawImage(video, 0, 0, width, height);
-
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
-      const base64Data = imageDataUrl.split(',')[1];
-
-      try {
-        const apiKey = process.env.GEMINI_API_KEY;
-        if (!apiKey || apiKey.includes('TODO') || apiKey.includes('YOUR_API_KEY')) {
-          throw new Error('AI service not configured. Please check your API key in settings.');
-        }
-
-        const ai = new GoogleGenAI({ apiKey });
-        const response = await ai.models.generateContent({
-          model: "gemini-3-flash-preview",
-          contents: [
-            {
-              text: `You are a strictly evidentiary product scanner. 
-              Analyze the image for a clear product label, barcode, or identifiable text (SKU, Product Name).
-              
-              RULES:
-              1. If the image does not contain a clear product label, barcode, or identifiable text, return exactly: {"error": "no_product_detected"}.
-              2. Do NOT 'guess' based on background objects, people, or context.
-              3. Only return product data if a SKU, Barcode, or Product Name is clearly legible.
-              4. If found, return the most prominent text found on the label (e.g., the SKU or Product Name).
-              
-              Response format: Return ONLY the text found or the error JSON.`
-            },
-            {
-              inlineData: {
-                data: base64Data,
-                mimeType: "image/jpeg"
-              }
-            }
-          ]
-        });
-
-        const resultText = response.text?.trim() || "";
-        
-        if (resultText.includes('no_product_detected')) {
-          toast.error("No product detected. Please point the camera at a label");
-        } else if (resultText) {
-          onTextScan(resultText, base64Data);
-        } else {
-          toast.error("No text found. Please try again.");
-        }
-      } catch (error) {
-        console.error("Vision Error:", error);
-        toast.error("Failed to read product details. Please try again.");
-      } finally {
-        setIsProcessingText(false);
       }
     }
   };
@@ -316,7 +241,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden flex flex-col shadow-2xl">
         <div className="p-4 border-b flex justify-between items-center bg-gray-50">
           <h3 className="font-bold text-gray-900">
-            {mode === 'BARCODE' ? 'Scan Barcode' : 'Scan Product Details'}
+            {mode === 'BARCODE' ? 'Scan Barcode' : 'Identify Product'}
           </h3>
           <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-2 hover:bg-gray-200 rounded-full transition-colors">
             <X size={24} />
@@ -329,12 +254,6 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
              onClick={() => setMode('BARCODE')}
            >
              <Camera size={20} /> Barcode
-           </button>
-           <button 
-             className={`flex-1 py-4 flex items-center justify-center gap-2 font-bold transition-all ${mode === 'TEXT' ? 'bg-blue-50 text-blue-600 border-b-4 border-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
-             onClick={() => setMode('TEXT')}
-           >
-             <Type size={20} /> Read Text
            </button>
            <button 
              className={`flex-1 py-4 flex items-center justify-center gap-2 font-bold transition-all ${mode === 'AI' ? 'bg-blue-50 text-blue-600 border-b-4 border-blue-600' : 'text-gray-500 hover:bg-gray-50'}`}
@@ -388,52 +307,6 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
                     </div>
                   </div>
                 </div>
-              )}
-              
-              {mode === 'TEXT' && (
-                <>
-                  <video 
-                    ref={videoRef} 
-                    autoPlay 
-                    playsInline 
-                    className="w-full h-full object-contain"
-                  />
-                  <canvas ref={canvasRef} className="hidden" />
-                  
-                  <div className="absolute bottom-6 left-0 right-0 flex justify-center">
-                    <button
-                      onClick={captureAndRecognizeText}
-                      disabled={isProcessingText}
-                      className="bg-blue-600 text-white px-8 py-4 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
-                    >
-                      {isProcessingText ? (
-                        <>
-                          <Loader2 className="animate-spin" size={20} />
-                          <span>Analyzing...</span>
-                        </>
-                      ) : (
-                        <>
-                          <Camera size={20} />
-                          <span>Capture Product</span>
-                        </>
-                      )}
-                    </button>
-                  </div>
-                  
-                  {/* Overlay guide for text scanning - Rectangular 95% width with 5:3 aspect ratio */}
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                    <div className="w-[95%] aspect-[5/3] relative">
-                      {/* Shading */}
-                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl border border-white/20"></div>
-                      
-                      {/* Corners - White larger borders */}
-                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
-                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
-                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
-                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
-                    </div>
-                  </div>
-                </>
               )}
 
               {mode === 'AI' && (

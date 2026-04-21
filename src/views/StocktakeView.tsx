@@ -289,40 +289,6 @@ export function StocktakeView({
     setStep('ERROR');
   };
 
-  const handleTextScan = (scannedText: string, base64Image?: string) => {
-    if (step === 'COMPLETED') return;
-    if (!scannedText.trim()) return;
-    
-    setLastScannedText(scannedText);
-    if (base64Image) setLastScannedImage(base64Image);
-    setShowScanner(false);
-    setCandidates([]);
-    
-    // Simple logic: check if the scanned text contains any of the barcodes or SKUs
-    const lowerText = scannedText.toLowerCase();
-    
-    const prodByText = products.find(p => 
-      lowerText.includes(p.barcode.toLowerCase()) ||
-      (p.barcode1 && lowerText.includes(p.barcode1.toLowerCase())) ||
-      (p.barcode2 && lowerText.includes(p.barcode2.toLowerCase())) ||
-      (p.barcode3 && lowerText.includes(p.barcode3.toLowerCase())) ||
-      lowerText.includes(p.sku.toLowerCase())
-    );
-
-    if (prodByText) {
-      setBarcode(prodByText.barcode); // Use primary barcode for record keeping
-      setProduct(prodByText);
-      setIsNewProduct(false);
-      setStep('COUNT');
-      return;
-    }
-    
-    // If no match found in text
-    setBarcode(scannedText);
-    setIsNewProduct(false);
-    setStep('ERROR');
-  };
-
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -550,7 +516,6 @@ export function StocktakeView({
       {showScanner && (
         <Scanner 
           onScan={handleScan} 
-          onTextScan={handleTextScan} 
           onAIIdentify={identifyProductWithAI}
           onClose={() => setShowScanner(false)} 
           spreadsheetId={import.meta.env.VITE_GOOGLE_SHEET_ID || '1bbVxr0BqFlDra2OPSd4o8J8kamWpKi-leG2Ax6wCdPs'}
