@@ -20,6 +20,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
   const [isProcessingText, setIsProcessingText] = useState(false);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [resetKey, setResetKey] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -32,15 +33,14 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       isTransitioning.current = true;
 
       try {
+        await stopAllResources();
+        
+        // Delay to allow OS to release camera hardware
+        await new Promise(resolve => setTimeout(resolve, 500));
+
         if (mode === 'BARCODE') {
-          stopCameraStream();
-          // Small delay before starting barcode scanner to release hardware
-          await new Promise(resolve => setTimeout(resolve, 300));
           await startBarcodeScanner();
         } else {
-          await stopBarcodeScanner();
-          // Small delay before starting camera stream for OS release
-          await new Promise(resolve => setTimeout(resolve, 300));
           await startCameraStream();
         }
       } finally {
@@ -51,27 +51,49 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
     handleModeChange();
 
     return () => {
-      stopBarcodeScanner();
-      stopCameraStream();
+      stopAllResources();
     };
-  }, [mode]);
+  }, [mode, resetKey]);
+
+  const stopAllResources = async () => {
+    // Stop barcode scanner
+    if (html5QrCodeRef.current) {
+      try {
+        if (html5QrCodeRef.current.isScanning) {
+          await html5QrCodeRef.current.stop();
+        }
+      } catch (err) {
+        console.warn("Error stopping barcode scanner:", err);
+      } finally {
+        html5QrCodeRef.current = null;
+      }
+    }
+
+    // Stop camera streams
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop();
+        console.log("Stopped track:", track.label);
+      });
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+  };
+
+  const resetCamera = () => {
+    stopAllResources().then(() => {
+      setResetKey(prev => prev + 1);
+      toast.info("Camera resetting...");
+    });
+  };
 
   const startBarcodeScanner = async () => {
     try {
-      // Ensure any previous instance is cleaned up
-      if (html5QrCodeRef.current) {
-        try {
-          if (html5QrCodeRef.current.isScanning) {
-            await html5QrCodeRef.current.stop();
-          }
-        } catch (e) {
-          console.warn("Cleanup error:", e);
-        }
-        html5QrCodeRef.current = null;
-      }
-
       // Small delay to ensure the container is in the DOM
-      await new Promise(resolve => setTimeout(resolve, 150));
+      await new Promise(resolve => setTimeout(resolve, 200));
       
       const html5QrCode = new Html5Qrcode("reader");
       html5QrCodeRef.current = html5QrCode;
@@ -86,12 +108,12 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
         aspectRatio: 1.0,
         disableFlip: false,
         videoConstraints: {
-          facingMode: "environment",
+          facingMode: { exact: "environment" },
         }
       };
 
       await html5QrCode.start(
-        { facingMode: "environment" },
+        { facingMode: { exact: "environment" } },
         config,
         async (decodedText) => {
           if (isTransitioning.current) return;
@@ -111,8 +133,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
               }
             }
 
-            await html5QrCode.stop();
-            html5QrCodeRef.current = null;
+            await stopAllResources();
             onScan(decodedText, base64Image);
           } catch (err) {
             console.error("Error stopping after scan:", err);
@@ -136,34 +157,21 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       setError(null);
     } catch (err) {
       console.error("Error starting barcode scanner:", err);
-      setError("Could not access camera. Please ensure you have granted permission and are using HTTPS.");
-    }
-  };
-
-  const stopBarcodeScanner = async () => {
-    if (html5QrCodeRef.current) {
-      try {
-        if (html5QrCodeRef.current.isScanning) {
-          await html5QrCodeRef.current.stop();
-        }
-      } catch (err) {
-        console.warn("Error stopping barcode scanner:", err);
-      } finally {
-        html5QrCodeRef.current = null;
-      }
+      setError("Please check if the back camera is available and not in use by another app.");
     }
   };
 
   const startCameraStream = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const constraints = {
         video: { 
-          facingMode: 'environment',
+          facingMode: { exact: "environment" },
           width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          aspectRatio: { ideal: 1.7777777778 }
+          height: { ideal: 1080 }
         }
-      });
+      };
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
@@ -171,14 +179,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       setError(null);
     } catch (err) {
       console.error("Error accessing camera for text scan:", err);
-      setError("Camera is busy. Please close other camera tabs or try again.");
-    }
-  };
-
-  const stopCameraStream = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
+      setError("Please check if the back camera is available and not in use.");
     }
   };
 
@@ -348,15 +349,23 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
             <div className="p-8 text-center text-white flex flex-col items-center gap-4">
               <AlertCircle size={48} className="text-red-500" />
               <p className="font-medium">{error}</p>
-              <button 
-                onClick={() => window.location.reload()}
-                className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg transition-colors"
-              >
-                Reload App
-              </button>
+              <div className="flex gap-2">
+                <button 
+                  onClick={resetCamera}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-bold"
+                >
+                  Reset Camera
+                </button>
+                <button 
+                  onClick={() => window.location.reload()}
+                  className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg transition-colors"
+                >
+                  Reload App
+                </button>
+              </div>
             </div>
           ) : (
-            <>
+            <div key={`${mode}-${resetKey}`} className="w-full h-full">
               {mode === 'BARCODE' && (
                 <div className="relative w-full h-full">
                   <div id="reader" className="w-full h-auto min-h-[300px]"></div>
@@ -472,7 +481,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
                   </div>
                 </>
               )}
-            </>
+            </div>
           )}
         </div>
         
