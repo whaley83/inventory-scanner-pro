@@ -34,9 +34,13 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       try {
         if (mode === 'BARCODE') {
           stopCameraStream();
+          // Small delay before starting barcode scanner to release hardware
+          await new Promise(resolve => setTimeout(resolve, 300));
           await startBarcodeScanner();
         } else {
           await stopBarcodeScanner();
+          // Small delay before starting camera stream for OS release
+          await new Promise(resolve => setTimeout(resolve, 300));
           await startCameraStream();
         }
       } finally {
@@ -167,7 +171,7 @@ export function Scanner({ onScan, onTextScan, onAIIdentify, onClose, spreadsheet
       setError(null);
     } catch (err) {
       console.error("Error accessing camera for text scan:", err);
-      setError("Could not access camera for text scanning.");
+      setError("Camera is busy. Please close other camera tabs or try again.");
     }
   };
 
