@@ -128,7 +128,7 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                 <th className="p-4 font-medium whitespace-nowrap">Category</th>
                 <th className="p-4 font-medium whitespace-nowrap">Store</th>
                 <th className="p-4 font-medium whitespace-nowrap">Product</th>
-                <th className="p-4 font-medium whitespace-nowrap">Original Qty</th>
+                <th className="p-4 font-medium whitespace-nowrap">Orig / Expected Qty</th>
                 <th className="p-4 font-medium whitespace-nowrap">Physical / Received</th>
                 <th className="p-4 font-medium whitespace-nowrap">Variance</th>
                 <th className="p-4 font-medium whitespace-nowrap">Time / User</th>
@@ -158,39 +158,40 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                         <span className="bg-amber-100 text-amber-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">NEW</span>
                       )}
                       {record.mode === 'Receiving' ? (
-                        <span className="bg-green-100 text-green-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">REC</span>
+                        <span className="bg-green-100 text-green-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">RCV</span>
                       ) : (
-                        <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">SCAN</span>
+                        <span className="bg-blue-100 text-blue-700 text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider">STake</span>
                       )}
                     </div>
                   </td>
                   <td className="p-4 whitespace-nowrap text-gray-600">
                     {record.mode === 'Receiving' ? (
-                      <span className="text-gray-400 text-xs">-</span>
+                      record.expectedQuantity || record.originalQuantity || 0
                     ) : (
                       record.originalQuantity
                     )}
                   </td>
                   <td className="p-4 whitespace-nowrap font-semibold">{record.physicalQty}</td>
                   <td className="p-4 whitespace-nowrap">
-                    {record.mode !== 'Receiving' && (
-                      <div className="flex flex-col gap-1">
+                    <div className="flex flex-col gap-1">
+                      {record.mode !== 'Receiving' ? (
                         <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${
                           record.variance === 0 ? 'bg-gray-100 text-gray-800' :
                           record.variance > 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
                         }`}>
                           {record.variance > 0 ? '+' : ''}{record.variance}
                         </span>
-                        {record.variance !== 0 && (
-                          <span className={`text-xs font-medium ${
-                            record.variance > 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            {record.variance > 0 ? '+' : ''}
-                            {( (record.variancePercentage !== undefined ? record.variancePercentage : (record.variancePercent || 0) / 100) * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </div>
-                    )}
+                      ) : null}
+                      
+                      {((record.variancePercentage !== undefined) || (record.variance !== 0)) && (
+                        <span className={`text-xs font-medium ${
+                          (record.variancePercentage || 0) >= 0 ? 'text-green-600' : 'text-red-600'
+                        }`}>
+                          {(record.variancePercentage || 0) >= 0 ? '+' : ''}
+                          {((record.variancePercentage !== undefined ? record.variancePercentage : (record.variancePercent || 0) / 100) * 100).toFixed(0)}%
+                        </span>
+                      )}
+                    </div>
                   </td>
                   <td className="p-4 whitespace-nowrap text-sm text-gray-500">
                     <div>{formatDate(record.timestamp)}</div>

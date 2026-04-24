@@ -4,12 +4,6 @@
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
 }
 
-#reader video {
-  object-fit: contain !important;
-  width: 100% !important;
-  height: auto !important;
-}
-
 @keyframes scan {
   0%, 100% { top: 0; }
   50% { top: 100%; }

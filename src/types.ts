@@ -34,6 +34,7 @@ export interface StocktakeRecord {
   barcodeScanned: string;
   quantity: number;
   originalQuantity: number;
+  expectedQuantity?: number;
   physicalQty: number;
   physicalCount: number;
   unitType: 'Piece' | 'Box';

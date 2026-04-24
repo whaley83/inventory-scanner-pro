@@ -26,12 +26,39 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   const isTransitioning = useRef(false);
 
   useEffect(() => {
+    // Inject CSS to fix library specific UI issues and ensure object-fit: contain
+    const styleId = 'scanner-ui-fix';
+    if (!document.getElementById(styleId)) {
+      const style = document.createElement('style');
+      style.id = styleId;
+      style.innerHTML = `
+        #reader { border: none !important; position: relative !important; width: 100% !important; height: 100% !important; min-height: 400px !important; background: black !important; overflow: hidden !important; }
+        #reader__scan_region { border: none !important; height: 100% !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; position: relative !important; }
+        #reader__scan_region > video { 
+          display: block !important; 
+          object-fit: cover !important; 
+          width: 100% !important; 
+          height: 100% !important; 
+          position: absolute !important;
+          top: 0 !important;
+          left: 0 !important;
+        }
+        #reader__scan_region > div { display: none !important; pointer-events: none !important; opacity: 0 !important; }
+        #reader__dashboard { display: none !important; }
+        #reader__status_span { display: none !important; }
+        /* Hide library injected qr-shaded-region and overlays */
+        [id*="qr-shaded-region"] { display: none !important; border: none !important; }
+        [id*="reader__scan_region"] div { border: none !important; background: none !important; display: none !important; }
+      `;
+      document.head.appendChild(style);
+    }
+
     const handleModeChange = async () => {
       if (isTransitioning.current) return;
       isTransitioning.current = true;
 
       try {
-        await stopScanner();
+        await stopCurrentStream();
         
         // Delay to allow OS to release camera hardware
         await new Promise(resolve => setTimeout(resolve, 500));
@@ -49,11 +76,11 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
     handleModeChange();
 
     return () => {
-      stopScanner();
+      stopCurrentStream();
     };
   }, [mode, resetKey]);
 
-  const stopScanner = async () => {
+  const stopCurrentStream = async () => {
     // 1. Explicitly stop barcode scanner library
     if (html5QrCodeRef.current) {
       try {
@@ -81,14 +108,16 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       });
     });
 
-    // 3. Nullify references
+    // 3. Nullify references and remove temporary styles
     streamRef.current = null;
     if (videoRef.current) videoRef.current.srcObject = null;
     if (scannerVideo) scannerVideo.srcObject = null;
+    
+    document.getElementById('scanner-ui-fix')?.remove();
   };
 
   const resetCamera = async () => {
-    await stopScanner();
+    await stopCurrentStream();
     await new Promise(resolve => setTimeout(resolve, 500));
     setResetKey(prev => prev + 1);
     toast.info("Camera resetting...");
@@ -105,15 +134,17 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       const config = { 
         fps: 20, 
         qrbox: (viewWidth: number, viewHeight: number) => {
-          const boxWidth = viewWidth * 0.95;
-          const boxHeight = Math.min(boxWidth * 0.6, viewHeight * 0.9);
-          return { width: Math.floor(boxWidth), height: Math.floor(boxHeight) };
+          // Sync with visual guide: 85% of width, 5:3 aspect ratio
+          const boxWidth = Math.floor(viewWidth * 0.85);
+          const boxHeight = Math.floor(boxWidth * 0.6); 
+          return { width: boxWidth, height: boxHeight };
         },
         aspectRatio: undefined,
         disableFlip: false,
         videoConstraints: {
           facingMode: "environment",
-          width: { ideal: 1280 }
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       };
 
@@ -138,7 +169,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
               }
             }
 
-            await stopScanner();
+            await stopCurrentStream();
             onScan(decodedText, base64Image);
           } catch (err) {
             console.error("Error stopping after scan:", err);
@@ -152,12 +183,12 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         }
       );
       
-      // Apply object-fit contain to ensure full frame is visible
+      // Apply consistent object-fit cover to ensure camera fills the UI window
       const videoElement = document.querySelector('#reader video') as HTMLVideoElement;
       if (videoElement) {
-        videoElement.style.objectFit = 'contain';
+        videoElement.style.setProperty('object-fit', 'cover', 'important');
         videoElement.style.width = '100%';
-        videoElement.style.height = 'auto';
+        videoElement.style.height = '100%';
       }
       setError(null);
     } catch (err) {
@@ -171,7 +202,8 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       const constraints = {
         video: { 
           facingMode: "environment",
-          width: { ideal: 1280 }
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       };
 
@@ -223,12 +255,12 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
       try {
         await onAIIdentify(base64Data);
-        await stopScanner();
+        await stopCurrentStream();
         onClose();
       } catch (error) {
         console.error("AI Identify Error:", error);
         toast.error("AI could not identify product. Please enter manually.");
-        await stopScanner();
+        await stopCurrentStream();
         onClose();
       } finally {
         setIsIdentifying(false);
@@ -286,49 +318,52 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
           ) : (
             <div key={`${mode}-${resetKey}`} className="w-full h-full">
               {mode === 'BARCODE' && (
-                <div className="relative w-full h-full">
-                  <div id="reader" className="w-full h-auto min-h-[300px]"></div>
-                  <canvas ref={canvasRef} className="hidden" />
-                  
-                  {/* Overlay guide for barcode - Matches the 95% config */}
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                    <div className="w-[95%] aspect-[5/3] relative">
-                      {/* Shading */}
-                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl"></div>
-                      
-                      {/* Corners - White larger borders */}
-                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
-                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
-                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
-                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
-                      
-                      {/* Scanning line animation */}
-                      <div className="absolute top-0 left-0 right-0 h-[2px] bg-red-500/50 animate-scan shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div>
+                  <div className="relative w-full h-[400px] flex flex-col items-center overflow-hidden">
+                    <div id="reader" className="absolute inset-0"></div>
+                    <canvas ref={canvasRef} className="hidden" />
+                    
+                    {/* Overlay guide for barcode - Matches the 85% config */}
+                    <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
+                      <div className="w-[85%] aspect-[5/3] relative">
+                        {/* Shading */}
+                        <div className="absolute inset-0 shadow-[0_0_0_2000px_rgba(0,0,0,0.7)] rounded-xl"></div>
+                        
+                        {/* Box outline */}
+                        <div className="absolute inset-0 border-2 border-white/30 rounded-xl"></div>
+                        
+                        {/* Corners - High Visibility */}
+                        <div className="absolute top-[-4px] left-[-4px] w-14 h-14 border-t-8 border-l-8 border-white rounded-tl-xl drop-shadow-xl"></div>
+                        <div className="absolute top-[-4px] right-[-4px] w-14 h-14 border-t-8 border-r-8 border-white rounded-tr-xl drop-shadow-xl"></div>
+                        <div className="absolute bottom-[-4px] left-[-4px] w-14 h-14 border-b-8 border-l-8 border-white rounded-bl-xl drop-shadow-xl"></div>
+                        <div className="absolute bottom-[-4px] right-[-4px] w-14 h-14 border-b-8 border-r-8 border-white rounded-br-xl drop-shadow-xl"></div>
+                        
+                        {/* Scanning line animation - Standard moving line */}
+                        <div className="absolute top-0 left-0 right-0 h-[2px] bg-red-500 animate-scan shadow-[0_0_15px_rgba(239,68,68,1)] z-20"></div>
+                      </div>
                     </div>
                   </div>
-                </div>
               )}
 
               {mode === 'AI' && (
-                <>
+                <div className="relative w-full h-[400px] overflow-hidden bg-black flex items-center justify-center">
                   <video 
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
-                    className="w-full h-full object-contain"
+                    className="absolute inset-0 w-full h-full object-cover"
                   />
                   <canvas ref={canvasRef} className="hidden" />
                   
-                  <div className="absolute bottom-6 left-0 right-0 flex justify-center">
+                  <div className="absolute bottom-6 left-0 right-0 flex justify-center z-30">
                     <button
                       onClick={captureAndIdentify}
                       disabled={isIdentifying}
-                      className="bg-purple-600 text-white px-8 py-4 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
+                      className="bg-purple-600 text-white px-8 py-3 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
                     >
                       {isIdentifying ? (
                         <>
                           <Loader2 className="animate-spin" size={20} />
-                          <span>Loading...</span>
+                          <span>Identifying...</span>
                         </>
                       ) : (
                         <>
@@ -339,20 +374,23 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
                     </button>
                   </div>
                   
-                  {/* Overlay guide for AI identification - Rectangular 95% width with 5:3 aspect ratio */}
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
-                    <div className="w-[95%] aspect-[5/3] relative">
+                  {/* Overlay guide for AI identification - More portrait for products */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
+                    <div className="w-[75%] aspect-[3/4] relative">
                       {/* Shading */}
-                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl border border-purple-400/30"></div>
+                      <div className="absolute inset-0 shadow-[0_0_0_2000px_rgba(0,0,0,0.7)] rounded-xl border border-purple-400/30"></div>
                       
-                      {/* Corners - White larger borders (keeping high visibility) */}
-                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
-                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
-                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
-                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
+                      {/* Box outline */}
+                      <div className="absolute inset-0 border-2 border-white/30 rounded-xl"></div>
+                      
+                      {/* Corners */}
+                      <div className="absolute top-[-4px] left-[-4px] w-14 h-14 border-t-8 border-l-8 border-white rounded-tl-xl drop-shadow-xl"></div>
+                      <div className="absolute top-[-4px] right-[-4px] w-14 h-14 border-t-8 border-r-8 border-white rounded-tr-xl drop-shadow-xl"></div>
+                      <div className="absolute bottom-[-4px] left-[-4px] w-14 h-14 border-b-8 border-l-8 border-white rounded-bl-xl drop-shadow-xl"></div>
+                      <div className="absolute bottom-[-4px] right-[-4px] w-14 h-14 border-b-8 border-r-8 border-white rounded-br-xl drop-shadow-xl"></div>
                     </div>
                   </div>
-                </>
+                </div>
               )}
             </div>
           )}

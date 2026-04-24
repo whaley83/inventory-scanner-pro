@@ -186,8 +186,12 @@ async function startServer() {
   // Middleware to check auth
   const extractSpreadsheetId = (idOrUrl: string): string => {
     if (!idOrUrl) return '';
-    const match = idOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-    return match ? match[1] : idOrUrl;
+    if (idOrUrl.includes('/spreadsheets/d/')) {
+      const match = idOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+      return match ? match[1] : idOrUrl;
+    }
+    // Handle potential junk or combined strings
+    return idOrUrl.split(/[?#]/)[0].trim();
   };
 
   const fetchProductsInternal = async (spreadsheetId: string, authClient: any) => {
@@ -251,12 +255,31 @@ async function startServer() {
   };
 
   const logError = (prefix: string, error: any) => {
-    if (error && error.response && error.response.data) {
-      console.error(`${prefix}:`, JSON.stringify(error.response.data, null, 2));
-    } else if (error instanceof Error) {
-      console.error(`${prefix}:`, error.message);
+    let errorData = error;
+    
+    // If error is a string that looks like JSON, try to parse it
+    if (typeof error === 'string' && (error.startsWith('{') || error.startsWith('['))) {
+      try {
+        errorData = JSON.parse(error);
+      } catch (e) {
+        // Not JSON, keep as string
+      }
+    }
+
+    if (errorData && errorData.response && errorData.response.data) {
+      const data = errorData.response.data;
+      const message = data.error?.message || JSON.stringify(data);
+      const code = data.error?.code || 'UNKNOWN';
+      console.error(`${prefix} [${code}]: ${message}`);
+    } else if (errorData && errorData.error && typeof errorData.error === 'object') {
+      // Handle already parsed Google style errors
+      const message = errorData.error.message || JSON.stringify(errorData.error);
+      const code = errorData.error.code || 'UNKNOWN';
+      console.error(`${prefix} [${code}]: ${message}`);
+    } else if (errorData instanceof Error) {
+      console.error(`${prefix}:`, errorData.message);
     } else {
-      console.error(`${prefix}:`, error);
+      console.error(`${prefix}:`, errorData);
     }
   };
 
@@ -329,8 +352,16 @@ async function startServer() {
         }));
 
         return res.json({ products });
-      } catch (error) {
+      } catch (error: any) {
         logError('Sheets API Error', error);
+        
+        // Pass specific errors like 429 back to client if possible
+        if (error.response?.status === 429) {
+          return res.status(429).json({ 
+            error: 'Google Sheets API Quota Exceeded. Please try again in a minute.',
+            details: error.response.data?.error?.message
+          });
+        }
         // Fallback to public fetch if official API fails
       }
     }
@@ -388,11 +419,24 @@ async function startServer() {
 
     try {
       const sheets = google.sheets({ version: 'v4', auth: authClient as any });
-      const spreadsheet = await sheets.spreadsheets.get({
-        spreadsheetId: spreadsheetId as string,
-      });
+      
+      let sheetNames: string[] = [];
+      try {
+        const spreadsheet = await sheets.spreadsheets.get({
+          spreadsheetId: spreadsheetId as string,
+        });
+        sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title || '') || [];
+      } catch (metaErr: any) {
+        // If meta fetch fails (common with API keys and restricted spreadsheets), 
+        // fallback to common sheet names if it was an API key error
+        if (typeof authClient === 'string') {
+          console.warn('Metadata fetch failed with API Key, falling back to standard sheet names');
+          sheetNames = ['Scan-', 'Receiving-', 'New-', 'Products']; 
+        } else {
+          throw metaErr;
+        }
+      }
 
-      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title || '') || [];
       const scanSheets = sheetNames.filter(s => 
         (s.startsWith('Scan-') || s.startsWith('Receiving-') || s.startsWith('New-')) && 
         s !== 'Permissions'
@@ -458,9 +502,14 @@ async function startServer() {
       allRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
       res.json({ records: allRecords });
-    } catch (error) {
+    } catch (error: any) {
       logError('Fetch Records Error', error);
-      res.status(500).json({ error: 'Failed to fetch records from Google Sheets' });
+      const status = error.response?.status || 500;
+      const message = error.response?.data?.error?.message || 'Failed to fetch records from Google Sheets';
+      res.status(status).json({ 
+        error: message,
+        code: error.response?.data?.error?.code
+      });
     }
   });
 

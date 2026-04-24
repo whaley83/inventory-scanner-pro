@@ -45,6 +45,7 @@ export function StocktakeView({
   const [product, setProduct] = useState<Product | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [physicalQty, setPhysicalQty] = useState('');
+  const [expectedQtyInput, setExpectedQtyInput] = useState('');
   const [mode, setMode] = useState<'Stocktake' | 'Receiving'>('Stocktake');
   const [isNewProduct, setIsNewProduct] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -396,12 +397,13 @@ export function StocktakeView({
       barcodeScanned: barcode,
       quantity: 0,
       originalQuantity: 0,
+      expectedQuantity: mode === 'Receiving' ? parseFloat(physicalQty) : 0, // In new product, expected is same if receiving? or separate? user said "replace Original Qty with Expected Quantity"
       physicalQty: qty,
       physicalCount: qty,
       unitType: unitType,
-      variance: variance,
-      variancePercent: 100,
-      variancePercentage: variancePercentage,
+      variance: mode === 'Receiving' ? 0 : qty,
+      variancePercent: mode === 'Receiving' ? 0 : 100,
+      variancePercentage: mode === 'Receiving' ? 0 : 1.0,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
       status: 'Pending',
@@ -446,12 +448,23 @@ export function StocktakeView({
       qty = parseInt(physicalQty, 10) * parseInt(piecesPerBox, 10);
     }
 
-    const variance = qty - product.quantity;
+    const variance = mode === 'Receiving' 
+      ? qty - parseFloat(expectedQtyInput || '0')
+      : qty - product.quantity;
+      
     let variancePercentage = 0;
-    if (product.quantity !== 0) {
-      variancePercentage = (variance / product.quantity);
-    } else if (variance > 0) {
-      variancePercentage = 1.0; // +100%
+    
+    if (mode === 'Receiving') {
+      const expected = parseFloat(expectedQtyInput || '0');
+      if (expected !== 0) {
+        variancePercentage = (qty - expected) / expected;
+      }
+    } else {
+      if (product.quantity !== 0) {
+        variancePercentage = (variance / product.quantity);
+      } else if (variance > 0) {
+        variancePercentage = 1.0;
+      }
     }
 
     const productName = product.variantName && product.name.includes(product.variantName) 
@@ -468,7 +481,8 @@ export function StocktakeView({
       barcode: product.barcode,
       barcodeScanned: barcode,
       quantity: product.quantity,
-      originalQuantity: product.quantity,
+      originalQuantity: mode === 'Receiving' ? parseFloat(expectedQtyInput || '0') : product.quantity,
+      expectedQuantity: mode === 'Receiving' ? parseFloat(expectedQtyInput || '0') : undefined,
       physicalQty: qty,
       physicalCount: qty,
       unitType: unitType,
@@ -477,7 +491,7 @@ export function StocktakeView({
       variancePercentage: variancePercentage,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
-      status: 'Pending',
+      status: 'Pending', // Internal status for the record object
       mode: mode,
       isNewProduct: isNewProduct,
       storeLocation: selectedStore,
@@ -787,7 +801,7 @@ export function StocktakeView({
                 {product.variantName && (
                   <p className="text-sm font-medium text-white/80 mt-1">Variant: {product.variantName}</p>
                 )}
-                <p className="text-sm text-white/60 font-mono mt-1">SKU: {product.sku}</p>
+                <p className="text-sm text-white/60 font-mono mt-1">Barcode: {product.barcode}</p>
               </div>
               <span className={`text-xs px-2 py-1 rounded font-bold uppercase tracking-wider ${
                 mode === 'Stocktake' ? 'bg-blue-500 text-white' : 'bg-green-500 text-white'
@@ -797,6 +811,19 @@ export function StocktakeView({
             </div>
 
             <form onSubmit={handleCountSubmit} className="space-y-4">
+              {mode === 'Receiving' && (
+                <div className="space-y-2">
+                  <label className="text-xs font-bold text-white/70 uppercase">Expected Quantity</label>
+                  <input
+                    type="number"
+                    required
+                    value={expectedQtyInput}
+                    onChange={(e) => setExpectedQtyInput(e.target.value)}
+                    placeholder="Enter expected amount..."
+                    className="w-full p-4 bg-white/10 border-2 border-white/20 rounded-xl text-white placeholder:text-white/40 focus:border-white focus:ring-0 transition-colors"
+                  />
+                </div>
+              )}
               <div className="flex bg-white/10 p-1 rounded-lg mb-4">
                 <button
                   type="button"
@@ -949,8 +976,7 @@ export function StocktakeView({
                   required
                   value={product.barcode}
                   onChange={(e) => setProduct({ ...product, barcode: e.target.value })}
-                  className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl text-gray-500"
-                  readOnly
+                  className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0 transition-colors"
                 />
               </div>
             </div>
