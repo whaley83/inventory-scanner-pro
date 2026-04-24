@@ -46,12 +46,12 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         if (devices && devices.length > 0) {
           // Priority sorting for macro/back cameras
           const sorted = [...devices].sort((a, b) => {
-            const aLabel = a.label.toLowerCase();
-            const bLabel = b.label.toLowerCase();
+            const aLabel = (a.label || '').toLowerCase();
+            const bLabel = (b.label || '').toLowerCase();
             
             // Ultra Wide is priority 1 for iPhone focus issues
-            const ultraWideKeywords = ['ultra wide', 'ultra-wide', 'macro'];
-            const backKeywords = ['back', 'rear', 'main', 'camera 0', '1x'];
+            const ultraWideKeywords = ['ultra wide', 'ultra-wide', 'macro', '0.5x'];
+            const backKeywords = ['back', 'rear', 'main', 'camera 0', '1x', 'facing back'];
             
             const aIsUltra = ultraWideKeywords.some(k => aLabel.includes(k));
             const bIsUltra = ultraWideKeywords.some(k => bLabel.includes(k));
@@ -65,9 +65,22 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
             if (aIsBack && !bIsBack) return -1;
             if (!aIsBack && bIsBack) return 1;
             
+            // If labels are empty (Safari can be weird), we can't do much here, 
+            // but usually the first one is front and last ones are back.
             return 0;
           });
-          setAvailableCameras(sorted);
+
+          // Final safety check: if none match keywords, try to pick the last one as back
+          const hasBackKeyword = sorted.some(d => 
+            ['back', 'rear', 'main', 'camera 0', '1x'].some(k => (d.label || '').toLowerCase().includes(k))
+          );
+          
+          if (!hasBackKeyword && sorted.length > 1) {
+            // Reverse so last camera (likely back) is first
+            setAvailableCameras([...sorted].reverse());
+          } else {
+            setAvailableCameras(sorted);
+          }
         }
       } catch (e) {
         console.warn("Camera enumeration failed:", e);
@@ -268,13 +281,14 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
       let cameraIdToUse = availableCameras[currentCameraIndex]?.id;
       
-      // If we don't have a list yet, try to find one
+      // If we don't have a list yet, try to find one with strong back-priority
       if (!cameraIdToUse) {
         try {
           const devices = await Html5Qrcode.getCameras();
           if (devices && devices.length > 0) {
-            const back = devices.find(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('rear'));
-            cameraIdToUse = back ? back.id : devices[0].id;
+            const backKeywords = ['back', 'rear', 'main', '1x', '0.5x', 'ultra'];
+            const back = devices.find(d => backKeywords.some(k => (d.label || '').toLowerCase().includes(k)));
+            cameraIdToUse = back ? back.id : devices[devices.length - 1].id; // Last one is usually back on Android
           }
         } catch (e) {}
       }
@@ -289,13 +303,17 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         aspectRatio: 1.777778,
         disableFlip: false,
         videoConstraints: {
+          facingMode: "environment", // Add this as a hint even with ID
           width: { ideal: 1280 },
           height: { ideal: 720 },
           aspectRatio: 1.777778
         }
       };
 
-      const cameraParam = cameraIdToUse ? { deviceId: { exact: cameraIdToUse } } : { facingMode: { exact: "environment" } };
+      // Prefer facingMode override if no specific camera was chosen manually
+      const cameraParam = currentCameraIndex === 0 && !cameraIdToUse 
+        ? { facingMode: "environment" } 
+        : (cameraIdToUse ? { deviceId: { exact: cameraIdToUse } } : { facingMode: "environment" });
       
       try {
         await html5QrCode.start(
@@ -377,7 +395,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       const preferredConstraints = {
         video: { 
           deviceId: cameraIdToUse ? { exact: cameraIdToUse } : undefined,
-          facingMode: cameraIdToUse ? undefined : { exact: "environment" },
+          facingMode: cameraIdToUse ? "environment" : { ideal: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
           aspectRatio: 1.777778
