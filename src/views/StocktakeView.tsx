@@ -198,12 +198,12 @@ export function StocktakeView({
       
       const productListContext = products.map(p => `- ${p.name} | ${p.variantName}`).join('\n');
 
-      const prompt = `You are a specialized product identification agent.
+      const prompt = `Analyze this image. 
+      1. If there is a barcode, decode the numbers. 
+      2. If no barcode is found or it's blurry, identify the product based on its brand name, logo, and packaging text. 
+      Return the most likely product name and GTIN.
       
-      TASK: Identify the product in the image. 
-      - If a barcode is visible and sharp, decode it. 
-      - If the barcode is blurry, missing, or unreadable, identify the product by its label, brand name, and packaging design.
-      - Map the identified product to the MASTER PRODUCT LIST below.
+      Map the identified product to the MASTER PRODUCT LIST below.
       
       INPUTS:
       1. Image for analysis (Barcode or Product Label).

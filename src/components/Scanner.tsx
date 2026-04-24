@@ -39,23 +39,32 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       setZoom(1.5); 
     }
     
-    // Auto-detection of cameras
+    // Auto-detection of cameras with strict priority for iPhone 17 Pro focus issues
     const initCameras = async () => {
       try {
         const devices = await Html5Qrcode.getCameras();
         if (devices && devices.length > 0) {
-          // Sort to put back cameras first
+          // Priority sorting for macro/back cameras
           const sorted = [...devices].sort((a, b) => {
             const aLabel = a.label.toLowerCase();
             const bLabel = b.label.toLowerCase();
             
-            // Priority keywords for back cameras, especially iPhone 17 Pro main lenses
+            // Ultra Wide is priority 1 for iPhone focus issues
+            const ultraWideKeywords = ['ultra wide', 'ultra-wide', 'macro'];
             const backKeywords = ['back', 'rear', 'main', 'camera 0', '1x'];
+            
+            const aIsUltra = ultraWideKeywords.some(k => aLabel.includes(k));
+            const bIsUltra = ultraWideKeywords.some(k => bLabel.includes(k));
+            
+            if (aIsUltra && !bIsUltra) return -1;
+            if (!aIsUltra && bIsUltra) return 1;
+            
             const aIsBack = backKeywords.some(k => aLabel.includes(k));
             const bIsBack = backKeywords.some(k => bLabel.includes(k));
             
             if (aIsBack && !bIsBack) return -1;
             if (!aIsBack && bIsBack) return 1;
+            
             return 0;
           });
           setAvailableCameras(sorted);
@@ -500,10 +509,10 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
             {availableCameras.length > 1 && (
               <button 
                 onClick={switchCamera}
-                title="Switch Camera"
-                className="text-gray-500 hover:text-blue-600 p-2 hover:bg-gray-200 rounded-full transition-colors"
+                className="flex items-center gap-1 text-gray-500 hover:text-blue-600 px-2 py-1 hover:bg-gray-200 rounded-lg transition-colors border border-gray-200"
               >
-                <Camera size={20} />
+                <Camera size={18} />
+                <span className="text-[10px] font-bold uppercase">Flip</span>
               </button>
             )}
             <button 
