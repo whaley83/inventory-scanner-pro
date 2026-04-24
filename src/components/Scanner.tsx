@@ -22,10 +22,19 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-
   const isTransitioning = useRef(false);
 
+  const [zoom, setZoom] = useState(1);
+  const [isIPhonePro, setIsIPhonePro] = useState(false);
+
   useEffect(() => {
+    // Detect iPhone Pro models which have the focus issue
+    const ua = navigator.userAgent;
+    if (/iPhone/i.test(ua) && (ua.includes('Pro') || window.screen.height >= 812)) {
+      setIsIPhonePro(true);
+      setZoom(2); // Default to 2x zoom for Pro models to allow distance
+    }
+    
     // Inject CSS to fix library specific UI issues and ensure 16:9 aspect ratio
     const styleId = 'scanner-ui-fix';
     if (!document.getElementById(styleId)) {
@@ -145,69 +154,113 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
     toast.info("Camera resetting...");
   };
 
+  const applyAdvancedConstraints = async (videoElement: HTMLVideoElement) => {
+    if (videoElement.srcObject) {
+      const stream = videoElement.srcObject as MediaStream;
+      const track = stream.getVideoTracks()[0];
+      if (track) {
+        try {
+          const capabilities = track.getCapabilities() as any;
+          const constraints: any = { advanced: [] };
+          
+          // 1. Digital Zoom (Hardware)
+          if (capabilities.zoom) {
+            constraints.advanced.push({ zoom: zoom });
+          } else {
+            // Software Fallback Zoom via CSS
+            videoElement.style.transform = `scale(${zoom})`;
+            videoElement.style.transformOrigin = 'center center';
+          }
+
+          // 2. Continuous Focus
+          if (capabilities.focusMode?.includes('continuous')) {
+            constraints.advanced.push({ focusMode: 'continuous' });
+          }
+
+          if (constraints.advanced.length > 0) {
+            await track.applyConstraints(constraints);
+          }
+        } catch (e) {
+          console.log("Advanced constraints not applied:", e);
+        }
+      }
+    }
+  };
+
   const startBarcodeScanner = async () => {
     try {
-      // Small delay to ensure the container is in the DOM
-      await new Promise(resolve => setTimeout(resolve, 200));
+      // Small delay for container stability
+      await new Promise(resolve => setTimeout(resolve, 300));
       
       const html5QrCode = new Html5Qrcode("reader");
       html5QrCodeRef.current = html5QrCode;
 
+      // Scan devices to find ultra-wide if on iPhone Pro
+      let cameraId: string | undefined;
+      try {
+        const devices = await Html5Qrcode.getCameras();
+        if (devices && devices.length > 1) {
+          // Look for ultra wide or back camera with specific index
+          const ultraWide = devices.find(d => d.label.toLowerCase().includes('ultra wide'));
+          if (ultraWide) cameraId = ultraWide.id;
+        }
+      } catch (e) {
+        console.warn("Could not list cameras:", e);
+      }
+
       const config = { 
-        fps: 20, 
+        fps: 25,
         qrbox: (viewWidth: number, viewHeight: number) => {
-          // Force a wide rectangle strictly based on width
-          const width = Math.floor(viewWidth * 0.9);
-          const height = Math.floor(viewWidth * 0.4); 
+          // Adjust box for zoom level
+          const width = Math.floor(viewWidth * (0.9 / zoom));
+          const height = Math.floor(viewWidth * (0.4 / zoom)); 
           return { width, height };
         },
-        aspectRatio: 1.777778,
+        aspectRatio: 1.777778, // 16:9
         rememberLastUsedCamera: true,
         disableFlip: false,
         videoConstraints: {
-          facingMode: "environment",
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
           aspectRatio: 1.777778
         }
       };
 
-      await html5QrCode.start(
-        { facingMode: "environment" },
-        config,
-        async (decodedText) => {
-          if (isTransitioning.current) return;
-          isTransitioning.current = true;
-          try {
-            // Capture frame before stopping
-            let base64Image: string | undefined;
-            const video = document.querySelector('#reader video') as HTMLVideoElement;
-            if (video && canvasRef.current) {
-              const canvas = canvasRef.current;
-              const context = canvas.getContext('2d');
-              if (context) {
-                canvas.width = video.videoWidth;
-                canvas.height = video.videoHeight;
-                context.drawImage(video, 0, 0);
-                base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-              }
-            }
-
-            await stopCurrentStream();
-            onScan(decodedText, base64Image);
-          } catch (err) {
-            console.error("Error stopping after scan:", err);
-            onScan(decodedText);
-          } finally {
-            isTransitioning.current = false;
-          }
-        },
-        (errorMessage) => {
-          // Ignore frequent scan errors
-        }
-      );
+      const cameraParam = cameraId ? { deviceId: { exact: cameraId } } : { facingMode: { exact: "environment" } };
       
-      // Apply consistent object-fit cover to ensure camera fills the UI window
+      try {
+        await html5QrCode.start(
+          cameraParam,
+          config,
+          handleScanSuccess,
+          () => {}
+        );
+      } catch (err) {
+        console.warn("Primary camera strategy failed, falling back...", err);
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          config,
+          handleScanSuccess,
+          () => {}
+        );
+      }
+      
+      await new Promise(resolve => setTimeout(resolve, 500));
+
       const videoElement = document.querySelector('#reader video') as HTMLVideoElement;
       if (videoElement) {
+        videoElement.setAttribute('playsinline', 'true');
+        videoElement.setAttribute('webkit-playsinline', 'true');
+        videoElement.muted = true;
+        
+        try {
+          await videoElement.play();
+        } catch (e) {
+          console.log("Auto-play blocked or failed:", e);
+        }
+
+        await applyAdvancedConstraints(videoElement);
+
         videoElement.style.setProperty('object-fit', 'cover', 'important');
         videoElement.style.width = '100%';
         videoElement.style.height = '100%';
@@ -215,28 +268,85 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       setError(null);
     } catch (err) {
       console.error("Error starting barcode scanner:", err);
-      setError("Camera not found or already in use. Please check your browser permissions.");
+      setError("Camera could not be initialized. Please ensure camera permissions are granted.");
+    }
+  };
+
+  const handleScanSuccess = async (decodedText: string) => {
+    if (isTransitioning.current) return;
+    isTransitioning.current = true;
+    try {
+      let base64Image: string | undefined;
+      const video = document.querySelector('#reader video') as HTMLVideoElement;
+      if (video && canvasRef.current) {
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        if (context) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          context.drawImage(video, 0, 0);
+          base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
+        }
+      }
+
+      await stopCurrentStream();
+      onScan(decodedText, base64Image);
+    } catch (err) {
+      console.error("Error stopping after scan:", err);
+      onScan(decodedText);
+    } finally {
+      isTransitioning.current = false;
     }
   };
 
   const startCameraStream = async () => {
     try {
-      const constraints = {
+      const preferredConstraints = {
         video: { 
-          facingMode: "environment",
+          facingMode: { exact: "environment" },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
           aspectRatio: 1.777778
         }
       };
 
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia(preferredConstraints);
+      } catch (err) {
+        console.warn("Exact environment AI camera failed, falling back...", err);
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { 
+            facingMode: "environment",
+            width: { ideal: 1280 },
+            height: { ideal: 720 },
+            aspectRatio: 1.777778
+          }
+        });
+      }
+
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
+        
+        // iOS REQUIREMENT: Force play and ensure attributes
+        videoRef.current.setAttribute('playsinline', 'true');
+        videoRef.current.muted = true;
+        try {
+          await videoRef.current.play();
+        } catch (e) {
+          console.log("AI camera play failed:", e);
+        }
+
+        const track = stream.getVideoTracks()[0];
+        if (track) {
+          await applyAdvancedConstraints(videoRef.current!);
+        }
       }
       setError(null);
     } catch (err) {
       console.error("Error accessing camera for identification:", err);
-      setError("Camera not found or already in use. Please check your browser permissions.");
+      setError("Camera could not be initialized. Please check permissions.");
     }
   };
 
@@ -244,14 +354,17 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
     if (!videoRef.current || !canvasRef.current) return;
 
     setIsIdentifying(true);
+    
+    // Optimization: Delay capture slightly to allow focus
+    await new Promise(resolve => setTimeout(resolve, 800));
+
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
 
     if (context) {
-      // Resize logic: max 1024px
-      const MAX_WIDTH = 1024;
-      const MAX_HEIGHT = 1024;
+      const MAX_WIDTH = 1280;
+      const MAX_HEIGHT = 1280;
       let width = video.videoWidth;
       let height = video.videoHeight;
 
@@ -269,9 +382,25 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
       canvas.width = width;
       canvas.height = height;
+      
+      // Draw frame
       context.drawImage(video, 0, 0, width, height);
 
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      // AI Enhancement: Contrast and Sharpness
+      // This helps with "misty" iPhone sensors
+      const imageData = context.getImageData(0, 0, width, height);
+      const data = imageData.data;
+      const contrast = 1.2; // 20% boost
+      const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+
+      for (let i = 0; i < data.length; i += 4) {
+        data[i] = factor * (data[i] - 128) + 128; // R
+        data[i + 1] = factor * (data[i + 1] - 128) + 128; // G
+        data[i + 2] = factor * (data[i + 2] - 128) + 128; // B
+      }
+      context.putImageData(imageData, 0, 0);
+
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9);
       const base64Data = imageDataUrl.split(',')[1];
 
       try {
@@ -280,7 +409,9 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         onClose();
       } catch (error) {
         console.error("AI Identify Error:", error);
-        toast.error("AI could not identify product. Please enter manually.");
+        toast.error("AI could not identify product. Please try again with better light or enter manually.");
+        // Don't close automatically if it fails, maybe let user try again?
+        // But the previous logic closed it, so I'll keep it for now.
         await stopCurrentStream();
         onClose();
       } finally {
@@ -296,9 +427,25 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
           <h3 className="font-bold text-gray-900">
             {mode === 'BARCODE' ? 'Scan Barcode' : 'Identify Product'}
           </h3>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-2 hover:bg-gray-200 rounded-full transition-colors">
-            <X size={24} />
-          </button>
+          <div className="flex items-center gap-2">
+            <button 
+              onClick={() => {
+                const nextZoom = zoom === 1 ? 2 : 1;
+                setZoom(nextZoom);
+                const video = mode === 'BARCODE' ? document.querySelector('#reader video') as HTMLVideoElement : videoRef.current;
+                if (video) {
+                  // Optimization: update state then force apply
+                  setTimeout(() => applyAdvancedConstraints(video), 10);
+                }
+              }}
+              className={`px-3 py-1 rounded-full text-xs font-bold transition-colors ${zoom > 1 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+            >
+              {zoom}x
+            </button>
+            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-2 hover:bg-gray-200 rounded-full transition-colors">
+              <X size={24} />
+            </button>
+          </div>
         </div>
         
         <div className="flex border-b">
@@ -316,7 +463,10 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
            </button>
         </div>
 
-        <div className="relative w-full bg-black min-h-[300px] flex items-center justify-center overflow-hidden">
+        <div className="relative w-full bg-black min-h-[300px] flex items-center justify-center overflow-hidden" onClick={() => {
+          const video = mode === 'BARCODE' ? document.querySelector('#reader video') as HTMLVideoElement : videoRef.current;
+          if (video) applyAdvancedConstraints(video);
+        }}>
           {error ? (
             <div className="p-8 text-center text-white flex flex-col items-center gap-4">
               <AlertCircle size={48} className="text-red-500" />
@@ -371,6 +521,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
+                    muted
                     className="absolute inset-0 w-full h-full object-cover"
                   />
                   <canvas ref={canvasRef} className="hidden" />
