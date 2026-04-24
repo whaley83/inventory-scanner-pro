@@ -189,20 +189,29 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
   const startBarcodeScanner = async () => {
     try {
+      // Nuclear cleanup of any previous tracks before starting
+      await stopCurrentStream();
+      
       // Small delay for container stability
       await new Promise(resolve => setTimeout(resolve, 300));
       
       const html5QrCode = new Html5Qrcode("reader");
       html5QrCodeRef.current = html5QrCode;
 
-      // Scan devices to find ultra-wide if on iPhone Pro
+      // Scan devices to find the correct back camera (iPhone 17 Pro priority)
       let cameraId: string | undefined;
       try {
         const devices = await Html5Qrcode.getCameras();
-        if (devices && devices.length > 1) {
-          // Look for ultra wide or back camera with specific index
+        if (devices && devices.length > 0) {
+          // Priority: 1. Ultra Wide (best for close barcodes) 2. "Back" 3. "Camera 0"
           const ultraWide = devices.find(d => d.label.toLowerCase().includes('ultra wide'));
+          const backCam = devices.find(d => d.label.toLowerCase().includes('back'));
+          const cam0 = devices.find(d => d.label.toLowerCase().includes('camera 0'));
+          
           if (ultraWide) cameraId = ultraWide.id;
+          else if (backCam) cameraId = backCam.id;
+          else if (cam0) cameraId = cam0.id;
+          else cameraId = devices[devices.length - 1].id; // Fallback to last device (usually back)
         }
       } catch (e) {
         console.warn("Could not list cameras:", e);
@@ -237,20 +246,27 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         );
       } catch (err) {
         console.warn("Primary camera strategy failed, falling back...", err);
-        await html5QrCode.start(
-          { facingMode: "environment" },
-          config,
-          handleScanSuccess,
-          () => {}
-        );
+        try {
+          await html5QrCode.start(
+            { facingMode: "environment" },
+            config,
+            handleScanSuccess,
+            () => {}
+          );
+        } catch (fallbackErr) {
+          console.error("All camera initialization failed:", fallbackErr);
+          throw fallbackErr;
+        }
       }
       
       await new Promise(resolve => setTimeout(resolve, 500));
 
       const videoElement = document.querySelector('#reader video') as HTMLVideoElement;
       if (videoElement) {
+        // Enforce iOS Safari compatibility attributes
         videoElement.setAttribute('playsinline', 'true');
         videoElement.setAttribute('webkit-playsinline', 'true');
+        videoElement.setAttribute('autoplay', 'true');
         videoElement.muted = true;
         
         try {
@@ -301,6 +317,9 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
   const startCameraStream = async () => {
     try {
+      // Nuclear cleanup
+      await stopCurrentStream();
+
       const preferredConstraints = {
         video: { 
           facingMode: { exact: "environment" },
@@ -329,8 +348,10 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         
-        // iOS REQUIREMENT: Force play and ensure attributes
+        // iOS Safari Requirements
         videoRef.current.setAttribute('playsinline', 'true');
+        videoRef.current.setAttribute('webkit-playsinline', 'true');
+        videoRef.current.setAttribute('autoplay', 'true');
         videoRef.current.muted = true;
         try {
           await videoRef.current.play();
