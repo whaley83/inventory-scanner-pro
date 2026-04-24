@@ -26,14 +26,30 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   const isTransitioning = useRef(false);
 
   useEffect(() => {
-    // Inject CSS to fix library specific UI issues and ensure object-fit: contain
+    // Inject CSS to fix library specific UI issues and ensure 16:9 aspect ratio
     const styleId = 'scanner-ui-fix';
     if (!document.getElementById(styleId)) {
       const style = document.createElement('style');
       style.id = styleId;
       style.innerHTML = `
-        #reader { border: none !important; position: relative !important; width: 100% !important; height: 100% !important; min-height: 400px !important; background: black !important; overflow: hidden !important; }
-        #reader__scan_region { border: none !important; height: 100% !important; width: 100% !important; display: flex !important; align-items: center !important; justify-content: center !important; position: relative !important; }
+        #reader { 
+          border: none !important; 
+          position: relative !important; 
+          width: 100% !important; 
+          height: auto !important; 
+          aspect-ratio: 16 / 9 !important; 
+          background: black !important; 
+          overflow: hidden !important; 
+        }
+        #reader__scan_region { 
+          border: none !important; 
+          height: 100% !important; 
+          width: 100% !important; 
+          display: flex !important; 
+          align-items: center !important; 
+          justify-content: center !important; 
+          position: relative !important; 
+        }
         #reader__scan_region > video { 
           display: block !important; 
           object-fit: cover !important; 
@@ -56,6 +72,12 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
     const handleModeChange = async () => {
       if (isTransitioning.current) return;
       isTransitioning.current = true;
+
+      // Nuclear cleanup of any old camera streams
+      if ((window as any).localStream) {
+        (window as any).localStream.getTracks().forEach((t: any) => t.stop());
+        (window as any).localStream = null;
+      }
 
       try {
         await stopCurrentStream();
@@ -134,17 +156,17 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       const config = { 
         fps: 20, 
         qrbox: (viewWidth: number, viewHeight: number) => {
-          // Sync with visual guide: 85% of width, 5:3 aspect ratio
-          const boxWidth = Math.floor(viewWidth * 0.85);
-          const boxHeight = Math.floor(boxWidth * 0.6); 
-          return { width: boxWidth, height: boxHeight };
+          // Force a wide rectangle strictly based on width
+          const width = Math.floor(viewWidth * 0.9);
+          const height = Math.floor(viewWidth * 0.4); 
+          return { width, height };
         },
-        aspectRatio: undefined,
+        aspectRatio: 1.777778,
+        rememberLastUsedCamera: true,
         disableFlip: false,
         videoConstraints: {
           facingMode: "environment",
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          aspectRatio: 1.777778
         }
       };
 
@@ -202,8 +224,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       const constraints = {
         video: { 
           facingMode: "environment",
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          aspectRatio: 1.777778
         }
       };
 
@@ -318,13 +339,13 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
           ) : (
             <div key={`${mode}-${resetKey}`} className="w-full h-full">
               {mode === 'BARCODE' && (
-                  <div className="relative w-full h-[400px] flex flex-col items-center overflow-hidden">
+                  <div className="relative w-full aspect-[16/9] flex flex-col items-center overflow-hidden">
                     <div id="reader" className="absolute inset-0"></div>
                     <canvas ref={canvasRef} className="hidden" />
                     
-                    {/* Overlay guide for barcode - Matches the 85% config */}
+                    {/* Overlay guide for barcode - Matches the 90% config */}
                     <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
-                      <div className="w-[85%] aspect-[5/3] relative">
+                      <div className="w-[90%] aspect-[9/4] relative">
                         {/* Shading */}
                         <div className="absolute inset-0 shadow-[0_0_0_2000px_rgba(0,0,0,0.7)] rounded-xl"></div>
                         
@@ -345,7 +366,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
               )}
 
               {mode === 'AI' && (
-                <div className="relative w-full h-[400px] overflow-hidden bg-black flex items-center justify-center">
+                <div className="relative w-full aspect-[16/9] overflow-hidden bg-black flex items-center justify-center">
                   <video 
                     ref={videoRef} 
                     autoPlay 
