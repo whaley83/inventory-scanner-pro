@@ -24,16 +24,47 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   const streamRef = useRef<MediaStream | null>(null);
   const isTransitioning = useRef(false);
 
+  const [currentCameraIndex, setCurrentCameraIndex] = useState(0);
+  const [availableCameras, setAvailableCameras] = useState<any[]>([]);
   const [zoom, setZoom] = useState(1);
   const [isIPhonePro, setIsIPhonePro] = useState(false);
+  const scanTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     // Detect iPhone Pro models which have the focus issue
     const ua = navigator.userAgent;
     if (/iPhone/i.test(ua) && (ua.includes('Pro') || window.screen.height >= 812)) {
       setIsIPhonePro(true);
-      setZoom(2); // Default to 2x zoom for Pro models to allow distance
+      // For Pro models, we default to 1.5x to help with focus distance
+      setZoom(1.5); 
     }
+    
+    // Auto-detection of cameras
+    const initCameras = async () => {
+      try {
+        const devices = await Html5Qrcode.getCameras();
+        if (devices && devices.length > 0) {
+          // Sort to put back cameras first
+          const sorted = [...devices].sort((a, b) => {
+            const aLabel = a.label.toLowerCase();
+            const bLabel = b.label.toLowerCase();
+            
+            // Priority keywords for back cameras, especially iPhone 17 Pro main lenses
+            const backKeywords = ['back', 'rear', 'main', 'camera 0', '1x'];
+            const aIsBack = backKeywords.some(k => aLabel.includes(k));
+            const bIsBack = backKeywords.some(k => bLabel.includes(k));
+            
+            if (aIsBack && !bIsBack) return -1;
+            if (!aIsBack && bIsBack) return 1;
+            return 0;
+          });
+          setAvailableCameras(sorted);
+        }
+      } catch (e) {
+        console.warn("Camera enumeration failed:", e);
+      }
+    };
+    initCameras();
     
     // Inject CSS to fix library specific UI issues and ensure 16:9 aspect ratio
     const styleId = 'scanner-ui-fix';
@@ -163,16 +194,20 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
           const capabilities = track.getCapabilities() as any;
           const constraints: any = { advanced: [] };
           
-          // 1. Digital Zoom (Hardware)
+          // iPhone 17 Pro Optimization: Force hardware zoom to help with MFD (Minimum Focus Distance)
+          const targetZoom = isIPhonePro ? Math.max(zoom, 1.5) : zoom;
+
           if (capabilities.zoom) {
-            constraints.advanced.push({ zoom: zoom });
+            const minZoom = capabilities.zoom.min || 1;
+            const maxZoom = capabilities.zoom.max || 10;
+            const clampedZoom = Math.min(Math.max(targetZoom, minZoom), maxZoom);
+            constraints.advanced.push({ zoom: clampedZoom });
           } else {
-            // Software Fallback Zoom via CSS
-            videoElement.style.transform = `scale(${zoom})`;
+            // Software Fallback
+            videoElement.style.transform = `scale(${targetZoom})`;
             videoElement.style.transformOrigin = 'center center';
           }
 
-          // 2. Continuous Focus
           if (capabilities.focusMode?.includes('continuous')) {
             constraints.advanced.push({ focusMode: 'continuous' });
           }
@@ -181,10 +216,20 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
             await track.applyConstraints(constraints);
           }
         } catch (e) {
-          console.log("Advanced constraints not applied:", e);
+          console.log("Advanced constraints failed:", e);
         }
       }
     }
+  };
+
+  const switchCamera = async () => {
+    if (availableCameras.length <= 1) {
+      toast.info("No other cameras detected.");
+      return;
+    }
+    const nextIndex = (currentCameraIndex + 1) % availableCameras.length;
+    setCurrentCameraIndex(nextIndex);
+    await resetCamera();
   };
 
   const startBarcodeScanner = async () => {
@@ -195,38 +240,44 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       // Small delay for container stability
       await new Promise(resolve => setTimeout(resolve, 300));
       
+      // Start 2-second fallback timer
+      if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
+      scanTimerRef.current = setTimeout(() => {
+        if (mode === 'BARCODE' && !error) {
+          toast("Barcode taking too long?", {
+            description: "Try 'AI Identify' mode for faster results.",
+            action: {
+              label: "Switch to AI",
+              onClick: () => setMode('AI')
+            }
+          });
+        }
+      }, 3000); // 3 seconds fallback as requested
+
       const html5QrCode = new Html5Qrcode("reader");
       html5QrCodeRef.current = html5QrCode;
 
-      // Scan devices to find the correct back camera (iPhone 17 Pro priority)
-      let cameraId: string | undefined;
-      try {
-        const devices = await Html5Qrcode.getCameras();
-        if (devices && devices.length > 0) {
-          // Priority: 1. Ultra Wide (best for close barcodes) 2. "Back" 3. "Camera 0"
-          const ultraWide = devices.find(d => d.label.toLowerCase().includes('ultra wide'));
-          const backCam = devices.find(d => d.label.toLowerCase().includes('back'));
-          const cam0 = devices.find(d => d.label.toLowerCase().includes('camera 0'));
-          
-          if (ultraWide) cameraId = ultraWide.id;
-          else if (backCam) cameraId = backCam.id;
-          else if (cam0) cameraId = cam0.id;
-          else cameraId = devices[devices.length - 1].id; // Fallback to last device (usually back)
-        }
-      } catch (e) {
-        console.warn("Could not list cameras:", e);
+      let cameraIdToUse = availableCameras[currentCameraIndex]?.id;
+      
+      // If we don't have a list yet, try to find one
+      if (!cameraIdToUse) {
+        try {
+          const devices = await Html5Qrcode.getCameras();
+          if (devices && devices.length > 0) {
+            const back = devices.find(d => d.label.toLowerCase().includes('back') || d.label.toLowerCase().includes('rear'));
+            cameraIdToUse = back ? back.id : devices[0].id;
+          }
+        } catch (e) {}
       }
 
       const config = { 
         fps: 25,
         qrbox: (viewWidth: number, viewHeight: number) => {
-          // Adjust box for zoom level
-          const width = Math.floor(viewWidth * (0.9 / zoom));
-          const height = Math.floor(viewWidth * (0.4 / zoom)); 
+          const width = Math.max(50, Math.floor(viewWidth * (0.85 / zoom)));
+          const height = Math.max(50, Math.floor(viewWidth * (0.4 / zoom))); 
           return { width, height };
         },
-        aspectRatio: 1.777778, // 16:9
-        rememberLastUsedCamera: true,
+        aspectRatio: 1.777778,
         disableFlip: false,
         videoConstraints: {
           width: { ideal: 1280 },
@@ -235,7 +286,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         }
       };
 
-      const cameraParam = cameraId ? { deviceId: { exact: cameraId } } : { facingMode: { exact: "environment" } };
+      const cameraParam = cameraIdToUse ? { deviceId: { exact: cameraIdToUse } } : { facingMode: { exact: "environment" } };
       
       try {
         await html5QrCode.start(
@@ -245,18 +296,8 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
           () => {}
         );
       } catch (err) {
-        console.warn("Primary camera strategy failed, falling back...", err);
-        try {
-          await html5QrCode.start(
-            { facingMode: "environment" },
-            config,
-            handleScanSuccess,
-            () => {}
-          );
-        } catch (fallbackErr) {
-          console.error("All camera initialization failed:", fallbackErr);
-          throw fallbackErr;
-        }
+        console.warn("Primary strategy failed:", err);
+        await html5QrCode.start({ facingMode: "environment" }, config, handleScanSuccess, () => {});
       }
       
       await new Promise(resolve => setTimeout(resolve, 500));
@@ -291,6 +332,9 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   const handleScanSuccess = async (decodedText: string) => {
     if (isTransitioning.current) return;
     isTransitioning.current = true;
+    
+    // Clear timer
+    if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
     try {
       let base64Image: string | undefined;
       const video = document.querySelector('#reader video') as HTMLVideoElement;
@@ -317,12 +361,14 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
   const startCameraStream = async () => {
     try {
-      // Nuclear cleanup
       await stopCurrentStream();
+
+      let cameraIdToUse = availableCameras[currentCameraIndex]?.id;
 
       const preferredConstraints = {
         video: { 
-          facingMode: { exact: "environment" },
+          deviceId: cameraIdToUse ? { exact: cameraIdToUse } : undefined,
+          facingMode: cameraIdToUse ? undefined : { exact: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
           aspectRatio: 1.777778
@@ -333,7 +379,7 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       try {
         stream = await navigator.mediaDevices.getUserMedia(preferredConstraints);
       } catch (err) {
-        console.warn("Exact environment AI camera failed, falling back...", err);
+        console.warn("Exact AI hardware failed, using fallback...");
         stream = await navigator.mediaDevices.getUserMedia({
           video: { 
             facingMode: "environment",
@@ -372,9 +418,11 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   };
 
   const captureAndIdentify = async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || isIdentifying) return;
 
     setIsIdentifying(true);
+    // Explicitly clear any scan timers
+    if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
     
     // Optimization: Delay capture slightly to allow focus
     await new Promise(resolve => setTimeout(resolve, 800));
@@ -448,14 +496,22 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
           <h3 className="font-bold text-gray-900">
             {mode === 'BARCODE' ? 'Scan Barcode' : 'Identify Product'}
           </h3>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1">
+            {availableCameras.length > 1 && (
+              <button 
+                onClick={switchCamera}
+                title="Switch Camera"
+                className="text-gray-500 hover:text-blue-600 p-2 hover:bg-gray-200 rounded-full transition-colors"
+              >
+                <Camera size={20} />
+              </button>
+            )}
             <button 
               onClick={() => {
                 const nextZoom = zoom === 1 ? 2 : 1;
                 setZoom(nextZoom);
                 const video = mode === 'BARCODE' ? document.querySelector('#reader video') as HTMLVideoElement : videoRef.current;
                 if (video) {
-                  // Optimization: update state then force apply
                   setTimeout(() => applyAdvancedConstraints(video), 10);
                 }
               }}

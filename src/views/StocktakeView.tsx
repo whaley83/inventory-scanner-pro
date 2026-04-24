@@ -198,26 +198,28 @@ export function StocktakeView({
       
       const productListContext = products.map(p => `- ${p.name} | ${p.variantName}`).join('\n');
 
-      const prompt = `You are a semantic product matcher for an inventory system.
+      const prompt = `You are a specialized product identification agent.
       
-      TASK: Identify the product in the image and match it to the MASTER PRODUCT LIST.
+      TASK: Identify the product in the image. 
+      - If a barcode is visible and sharp, decode it. 
+      - If the barcode is blurry, missing, or unreadable, identify the product by its label, brand name, and packaging design.
+      - Map the identified product to the MASTER PRODUCT LIST below.
       
       INPUTS:
-      1. Image of product/barcode.
+      1. Image for analysis (Barcode or Product Label).
       2. Text Hint (if available): "${textHint}"
       
       MASTER PRODUCT LIST (Product Name | Variant):
       ${productListContext}
       
       RULES:
-      1. SEMANTIC MATCHING: Look for the most semantically similar item. "Wenax Q Pro" is the same as "WENAX Q PRO". 
-      2. FUZZY SEARCH: If its "Moonlit Silver" on the box but "Moonlit Silver (2ml)" in the list, its a match.
+      1. SEMANTIC MATCHING: "Wenax Q Pro" matches "WENAX Q PRO".
+      2. PACKAGING RECOGNITION: Use colors, logos, and printed text on the packaging as primary identifiers if barcodes fail.
       3. CONFIDENCE SCORING:
-         - "high": Only one definitive match found in the list.
-         - "ambiguous": Multiple variants for the same product exist in the list (e.g., same flavor but different nicotine levels or colors), and you aren't 100% sure which one it is.
-         - "none": No similar product exists in the list.
-      4. If "ambiguous", provide up to 5 best matches in the "candidates" field.
-      5. If "high" or "none", still provide "productName" and "variant" based on identification.
+         - "high": One definitive match found.
+         - "ambiguous": Multiple variants for same product (e.g., same flavor but different nicotine or colors).
+         - "none": New product not in list.
+      4. If "ambiguous", provide up to 5 best matches in "candidates".
       
       STRICT JSON RESPONSE FORMAT:
       {
