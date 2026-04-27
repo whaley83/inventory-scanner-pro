@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin, Sparkles, X } from 'lucide-react';
+import { Camera, Search, CheckCircle2, ArrowRight, Package, AlertCircle, ClipboardList, Plus, Loader2, RefreshCw, Truck, Upload, MapPin, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { Scanner } from '../components/Scanner';
 import { Product, BarcodeAlias, StocktakeRecord, AccessLevel } from '../types';
-import { GoogleGenAI, Type } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 
 interface Props {
   products: Product[];
@@ -45,13 +45,9 @@ export function StocktakeView({
   const [product, setProduct] = useState<Product | null>(null);
   const [showScanner, setShowScanner] = useState(false);
   const [physicalQty, setPhysicalQty] = useState('');
-  const [expectedQtyInput, setExpectedQtyInput] = useState('');
   const [mode, setMode] = useState<'Stocktake' | 'Receiving'>('Stocktake');
   const [isNewProduct, setIsNewProduct] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
-  const [lastScannedImage, setLastScannedImage] = useState<string | null>(null);
-  const [lastScannedText, setLastScannedText] = useState<string>('');
-  const [candidates, setCandidates] = useState<Product[]>([]);
   const [piecesPerBox, setPiecesPerBox] = useState('1');
   const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
   const [isSaving, setIsSaving] = useState(false);
@@ -120,74 +116,87 @@ export function StocktakeView({
   }, [externalProductAction, onClearExternalAction]);
 
   const handleAIIdentify = async (data: any) => {
+    // If AI failed to provide basic info, we still try to proceed to NEW_PRODUCT if possible
     const productName = data?.productName || '';
     const variant = data?.variant || '';
-    const confidence = data?.confidence || (data?.isNewProduct ? 'none' : 'high');
+    const extractedKeywords = data?.keywords || [];
+    const extractedBarcode = data?.barcode || '';
 
-    // 1. High Confidence Match (Exact or Semantic)
-    if (confidence === 'high' && productName && variant) {
-      const found = products.find(p => 
-        (p.name.toLowerCase() === productName.toLowerCase() && p.variantName.toLowerCase() === variant.toLowerCase()) ||
-        (`${p.name} ${p.variantName}`.toLowerCase() === `${productName} ${variant}`.toLowerCase())
-      );
-      if (found) {
-        setProduct(found);
-        setBarcode(found.barcode);
-        setStep('COUNT');
-        setShowScanner(false);
-        setCandidates([]);
-        toast.success(`Matched: ${found.name} (${found.variantName})`);
-        return;
+    // Advanced lookup logic
+    let matchedProduct: Product | null = null;
+
+    // 1. Try barcode match if AI found one
+    if (extractedBarcode) {
+      matchedProduct = products.find(p => 
+        p.barcode === extractedBarcode || 
+        p.barcode1 === extractedBarcode || 
+        p.barcode2 === extractedBarcode || 
+        p.barcode3 === extractedBarcode
+      ) || null;
+    }
+
+    // 2. Try Exact Name + Variant match
+    if (!matchedProduct && productName && variant) {
+      matchedProduct = products.find(p => 
+        p.name.toLowerCase() === productName.toLowerCase() && 
+        p.variantName.toLowerCase() === variant.toLowerCase()
+      ) || null;
+    }
+
+    // 3. Keyword-based fuzzy lookup
+    if (!matchedProduct && extractedKeywords.length > 0) {
+      // Find products that match most keywords
+      const scores = products.map(p => {
+        const productText = `${p.name} ${p.variantName} ${p.sku} ${p.barcode}`.toLowerCase();
+        let score = 0;
+        extractedKeywords.forEach((kw: string) => {
+          if (productText.includes(kw.toLowerCase())) score++;
+        });
+        return { product: p, score };
+      });
+
+      const bestMatch = scores.sort((a, b) => b.score - a.score)[0];
+      if (bestMatch && bestMatch.score >= 2) { // Require at least 2 keywords to match
+        matchedProduct = bestMatch.product;
       }
     }
 
-    // 2. Ambiguous Match (Multiple Candidates)
-    if (confidence === 'ambiguous' && data?.candidates?.length > 0) {
-      // Cross-reference candidates with actual product list to ensure we have full objects
-      const matchedCandidates = data.candidates.map((c: any) => {
-        return products.find(p => 
-          (p.name.toLowerCase() === c.productName?.toLowerCase() && p.variantName.toLowerCase() === c.variant?.toLowerCase())
-        );
-      }).filter(Boolean);
-
-      if (matchedCandidates.length > 0) {
-        setCandidates(matchedCandidates);
-        setShowScanner(false);
-        // We stay in SCAN or go to a special AMBIGUOUS step, but let's keep it simple
-        // If we have candidates, we'll show them in the UI
-        toast.info(`Found ${matchedCandidates.length} possible matches. Please select one.`);
-        return;
-      }
+    if (matchedProduct) {
+      setProduct(matchedProduct);
+      setBarcode(matchedProduct.barcode);
+      setStep('COUNT');
+      setShowScanner(false);
+      toast.success(`Product identified: ${matchedProduct.name}`);
+      return;
     }
 
-    // 3. No Match or AI forced New Product
-    // Use Smart Pre-fill for NEW_PRODUCT
-    setBarcode(data?.barcode || barcode || lastScannedText || '');
+    // Fallback to New Product Entry with pre-filled AI data
+    setBarcode(extractedBarcode || '');
     setProduct({
       name: productName,
       category: data?.category || 'Vape',
-      description: data?.description || '',
+      description: '',
       variantName: variant,
-      sku: data?.sku || '',
-      barcode: data?.barcode || barcode || lastScannedText || '',
+      sku: '',
+      barcode: extractedBarcode || '',
+      barcode1: '',
+      barcode2: '',
+      barcode3: '',
       quantity: 0
     });
     setPhysicalQty('');
     setIsNewProduct(true);
     setStep('NEW_PRODUCT');
     setShowScanner(false);
-    setCandidates([]);
     
-    if (confidence === 'none') {
-      toast.info('AI could not find a match. Pre-filled form with extracted info.');
+    if (data?.isNewProduct) {
+      toast.info('Product looks new. AI pre-filled the form for you.');
     } else {
-      toast.info('Smart pre-fill applied for new product entry.');
+      toast.info('AI identified details but no exact database match found.');
     }
   };
 
-  const identifyProductWithAI = async (base64Data: string, textHint: string = '') => {
-    setIsAnalyzing(true);
-    setLastScannedImage(base64Data);
+  const identifyProductWithAI = async (base64Data: string) => {
     try {
       const apiKey = process.env.GEMINI_API_KEY;
       if (!apiKey || apiKey.includes('TODO') || apiKey.includes('YOUR_API_KEY')) {
@@ -196,73 +205,60 @@ export function StocktakeView({
 
       const ai = new GoogleGenAI({ apiKey });
       
-      const productListContext = products.map(p => `- ${p.name} | ${p.variantName}`).join('\n');
+      const prompt = `Identify the product in this image. 
+      
+      EXTRACTION GOALS:
+      1. BRAND: Identify the brand (e.g., 'Elf Bar', 'Lost Mary', 'Pod Juice').
+      2. PRODUCT NAME: Identify the core model/product name.
+      3. VARIANT/FLAVOR: Identify specific flavor, nicotine level, or size.
+      4. BARCODE: Look for any visible barcode numbers (GTIN, EAN, UPC) on the product packaging.
+      5. KEYWORDS: Extract 3-5 specific searchable keywords found on the label.
 
-      const prompt = `Analyze this image. 
-      1. If there is a barcode, decode the numbers. 
-      2. If no barcode is found or it's blurry, identify the product based on its brand name, logo, and packaging text. 
-      Return the most likely product name and GTIN.
-      
-      Map the identified product to the MASTER PRODUCT LIST below.
-      
-      INPUTS:
-      1. Image for analysis (Barcode or Product Label).
-      2. Text Hint (if available): "${textHint}"
-      
-      MASTER PRODUCT LIST (Product Name | Variant):
-      ${productListContext}
-      
-      RULES:
-      1. SEMANTIC MATCHING: "Wenax Q Pro" matches "WENAX Q PRO".
-      2. PACKAGING RECOGNITION: Use colors, logos, and printed text on the packaging as primary identifiers if barcodes fail.
-      3. CONFIDENCE SCORING:
-         - "high": One definitive match found.
-         - "ambiguous": Multiple variants for same product (e.g., same flavor but different nicotine or colors).
-         - "none": New product not in list.
-      4. If "ambiguous", provide up to 5 best matches in "candidates".
-      
-      STRICT JSON RESPONSE FORMAT:
+      Return a JSON object:
       {
-        "confidence": "high" | "ambiguous" | "none",
         "productName": "string",
         "variant": "string",
-        "candidates": [{ "productName": "string", "variant": "string" }],
         "barcode": "string or null",
         "category": "string",
+        "keywords": ["array", "of", "strings"],
         "isNewProduct": boolean
       }
-      
-      Return ONLY the JSON.`;
+
+      Return ONLY the JSON object, no other text.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3-flash-preview",
         contents: [
-          { text: prompt },
-          { inlineData: { data: base64Data, mimeType: "image/jpeg" } }
+          {
+            text: prompt
+          },
+          {
+            inlineData: {
+              data: base64Data,
+              mimeType: "image/jpeg"
+            }
+          }
         ],
-        config: { responseMimeType: "application/json" }
+        config: {
+          responseMimeType: "application/json"
+        }
       });
 
       const result = JSON.parse(response.text);
       handleAIIdentify(result);
     } catch (error: any) {
       console.error('AI Identification Error:', error);
-      toast.error('AI identification failed. Please enter manually.');
-      handleAddNewProduct(); // Fallback to manual entry with current state
-    } finally {
-      setIsAnalyzing(false);
+      toast.error('AI Identification failed. Using manual entry.');
+      handleAIIdentify({ isNewProduct: true });
     }
   };
 
-  const handleScan = (scannedBarcode: string, base64Image?: string) => {
+  const handleScan = (scannedBarcode: string) => {
     if (step === 'COMPLETED') return;
     if (!scannedBarcode.trim()) return;
     
     setBarcode(scannedBarcode);
-    setLastScannedText(scannedBarcode);
-    if (base64Image) setLastScannedImage(base64Image);
     setShowScanner(false);
-    setCandidates([]);
     
     // Check primary barcode first
     let prodByBarcode = products.find(p => p.barcode === scannedBarcode);
@@ -356,14 +352,16 @@ export function StocktakeView({
   };
 
   const handleAddNewProduct = () => {
-    // If we have some text from a failed scan, use it as a starting point
     setProduct({
-      name: lastScannedText || '',
+      name: '',
       category: '',
       description: '',
       variantName: '',
       sku: '',
-      barcode: barcode || lastScannedText || '',
+      barcode: barcode,
+      barcode1: '',
+      barcode2: '',
+      barcode3: '',
       quantity: 0
     });
     setPhysicalQty('');
@@ -399,13 +397,12 @@ export function StocktakeView({
       barcodeScanned: barcode,
       quantity: 0,
       originalQuantity: 0,
-      expectedQuantity: mode === 'Receiving' ? parseFloat(physicalQty) : 0, // In new product, expected is same if receiving? or separate? user said "replace Original Qty with Expected Quantity"
       physicalQty: qty,
       physicalCount: qty,
       unitType: unitType,
-      variance: mode === 'Receiving' ? 0 : qty,
-      variancePercent: mode === 'Receiving' ? 0 : 100,
-      variancePercentage: mode === 'Receiving' ? 0 : 1.0,
+      variance: variance,
+      variancePercent: 100,
+      variancePercentage: variancePercentage,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
       status: 'Pending',
@@ -450,23 +447,12 @@ export function StocktakeView({
       qty = parseInt(physicalQty, 10) * parseInt(piecesPerBox, 10);
     }
 
-    const variance = mode === 'Receiving' 
-      ? qty - parseFloat(expectedQtyInput || '0')
-      : qty - product.quantity;
-      
+    const variance = qty - product.quantity;
     let variancePercentage = 0;
-    
-    if (mode === 'Receiving') {
-      const expected = parseFloat(expectedQtyInput || '0');
-      if (expected !== 0) {
-        variancePercentage = (qty - expected) / expected;
-      }
-    } else {
-      if (product.quantity !== 0) {
-        variancePercentage = (variance / product.quantity);
-      } else if (variance > 0) {
-        variancePercentage = 1.0;
-      }
+    if (product.quantity !== 0) {
+      variancePercentage = (variance / product.quantity);
+    } else if (variance > 0) {
+      variancePercentage = 1.0; // +100%
     }
 
     const productName = product.variantName && product.name.includes(product.variantName) 
@@ -483,8 +469,7 @@ export function StocktakeView({
       barcode: product.barcode,
       barcodeScanned: barcode,
       quantity: product.quantity,
-      originalQuantity: mode === 'Receiving' ? parseFloat(expectedQtyInput || '0') : product.quantity,
-      expectedQuantity: mode === 'Receiving' ? parseFloat(expectedQtyInput || '0') : undefined,
+      originalQuantity: product.quantity,
       physicalQty: qty,
       physicalCount: qty,
       unitType: unitType,
@@ -493,7 +478,7 @@ export function StocktakeView({
       variancePercentage: variancePercentage,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
-      status: 'Pending', // Internal status for the record object
+      status: 'Pending',
       mode: mode,
       isNewProduct: isNewProduct,
       storeLocation: selectedStore,
@@ -538,67 +523,6 @@ export function StocktakeView({
         />
       )}
 
-      {candidates.length > 0 && (
-        <div className="fixed inset-0 z-[110] bg-black/80 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl w-full max-w-sm overflow-hidden flex flex-col shadow-2xl animate-in fade-in zoom-in duration-200">
-            <div className="p-4 border-b bg-gray-50 flex justify-between items-center">
-              <h3 className="font-bold text-gray-900">Select Variant</h3>
-              <button 
-                onClick={() => setCandidates([])} 
-                className="text-gray-400 hover:text-gray-600 p-1 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <X size={20} />
-              </button>
-            </div>
-            <div className="p-4">
-              <p className="text-sm text-gray-500 mb-4 text-center italic">
-                "I found <strong>{candidates[0].name}</strong>. Which variant is this?"
-              </p>
-              <div className="space-y-2 max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
-                {candidates.map((c, i) => (
-                  <button
-                    key={i}
-                    onClick={() => {
-                      setProduct(c);
-                      setBarcode(c.barcode);
-                      setStep('COUNT');
-                      setCandidates([]);
-                    }}
-                    className="w-full text-left p-4 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50 transition-all flex items-center justify-between group"
-                  >
-                    <div>
-                      <div className="font-bold text-gray-900 group-hover:text-blue-700">{c.variantName}</div>
-                      <div className="text-xs text-gray-500 font-mono mt-1">SKU: {c.sku}</div>
-                    </div>
-                    <ArrowRight size={18} className="text-gray-300 group-hover:text-blue-500" />
-                  </button>
-                ))}
-              </div>
-              <button
-                onClick={() => {
-                  const first = candidates[0];
-                  setProduct({
-                    name: first.name,
-                    category: first.category,
-                    description: '',
-                    variantName: '',
-                    sku: '',
-                    barcode: barcode || '',
-                    quantity: 0
-                  });
-                  setIsNewProduct(true);
-                  setStep('NEW_PRODUCT');
-                  setCandidates([]);
-                }}
-                className="w-full mt-4 py-3 text-center text-sm font-bold text-blue-600 hover:bg-blue-50 rounded-xl transition-colors"
-              >
-                None of these, add as new product
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
       {step === 'LANDING' && (
         <div className="flex flex-col items-center justify-center h-full space-y-8 animate-in fade-in zoom-in duration-300">
           <div className="text-center space-y-4">
@@ -637,7 +561,7 @@ export function StocktakeView({
                 }`}
               >
                 <ClipboardList size={20} />
-                Stocktaking
+                Stocktake
               </button>
               <button
                 onClick={() => setMode('Receiving')}
@@ -803,7 +727,10 @@ export function StocktakeView({
                 {product.variantName && (
                   <p className="text-sm font-medium text-white/80 mt-1">Variant: {product.variantName}</p>
                 )}
-                <p className="text-sm text-white/60 font-mono mt-1">Barcode: {product.barcode}</p>
+                <div className="mt-3 bg-white/20 px-3 py-1.5 rounded-lg border border-white/30 inline-block font-mono tracking-wider">
+                  <span className="text-[10px] uppercase font-bold opacity-70 block mb-0.5">Barcode</span>
+                  <span className="text-sm font-bold">{product.barcode}</span>
+                </div>
               </div>
               <span className={`text-xs px-2 py-1 rounded font-bold uppercase tracking-wider ${
                 mode === 'Stocktake' ? 'bg-blue-500 text-white' : 'bg-green-500 text-white'
@@ -813,19 +740,6 @@ export function StocktakeView({
             </div>
 
             <form onSubmit={handleCountSubmit} className="space-y-4">
-              {mode === 'Receiving' && (
-                <div className="space-y-2">
-                  <label className="text-xs font-bold text-white/70 uppercase">Expected Quantity</label>
-                  <input
-                    type="number"
-                    required
-                    value={expectedQtyInput}
-                    onChange={(e) => setExpectedQtyInput(e.target.value)}
-                    placeholder="Enter expected amount..."
-                    className="w-full p-4 bg-white/10 border-2 border-white/20 rounded-xl text-white placeholder:text-white/40 focus:border-white focus:ring-0 transition-colors"
-                  />
-                </div>
-              )}
               <div className="flex bg-white/10 p-1 rounded-lg mb-4">
                 <button
                   type="button"
@@ -961,16 +875,7 @@ export function StocktakeView({
                 placeholder="Optional description..."
               />
             </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">SKU (Optional)</label>
-                <input
-                  type="text"
-                  value={product.sku}
-                  onChange={(e) => setProduct({ ...product, sku: e.target.value })}
-                  className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
-                />
-              </div>
+            <div className="grid grid-cols-1 gap-4">
               <div>
                 <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Barcode</label>
                 <input
@@ -978,7 +883,8 @@ export function StocktakeView({
                   required
                   value={product.barcode}
                   onChange={(e) => setProduct({ ...product, barcode: e.target.value })}
-                  className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0 transition-colors"
+                  className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl text-gray-500"
+                  readOnly
                 />
               </div>
             </div>
@@ -1051,13 +957,7 @@ export function StocktakeView({
 
           <div className="space-y-3">
             <button
-              onClick={() => {
-                if (lastScannedImage) {
-                  identifyProductWithAI(lastScannedImage, barcode || lastScannedText);
-                } else {
-                   fileInputRef.current?.click();
-                }
-              }}
+              onClick={() => fileInputRef.current?.click()}
               disabled={isAnalyzing}
               className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white rounded-2xl font-semibold text-lg flex items-center justify-center space-x-2 shadow-lg shadow-purple-200 transition-all active:scale-95 disabled:opacity-50"
             >

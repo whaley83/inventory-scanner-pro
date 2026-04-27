@@ -68,11 +68,16 @@ export function useInventory() {
           setProducts(data.products);
         }
       } else {
-        const errorData = await res.json();
-        toast.error(`Products Sync Failed: ${errorData.error || 'Unknown error'}`);
+        const errorData = await res.json().catch(() => ({ error: 'Sync failed' }));
+        console.error('Fetch Products Status Error:', res.status, errorData);
+        // Only toast if it's a real failure, not just a 404
+        if (res.status !== 404) {
+          toast.error(`Products Sync: ${errorData.error || 'Failed'}`);
+        }
       }
     } catch (error) {
       console.error('Failed to sync products from Google Sheets', error);
+      toast.error('Could not load products from Google Sheets.');
     } finally {
       setIsSyncing(false);
     }
@@ -92,31 +97,37 @@ export function useInventory() {
       if (res.ok) {
         const data = await res.json();
         if (data.records) {
-      // Map to match StocktakeRecord interface if necessary
-      const mappedRecords: StocktakeRecord[] = data.records.map((r: any) => {
-        // If variancePercentage is a decimal (e.g. 1.0 for 100%), multiply by 100
-        let vPercent = r.variancePercentage || 0;
-        if (Math.abs(vPercent) <= 2 && vPercent !== 0) {
-          vPercent = vPercent * 100;
-        }
-        
-        return {
-          ...r,
-          quantity: r.originalQuantity, // Ensure field name matches
-          originalQuantity: r.originalQuantity,
-          expectedQuantity: r.expectedQuantity || r.originalQuantity, // Fallback to originalQuantity if not set
-          physicalQty: r.physicalQty || r.physicalCount, // Ensure field name matches
-          variancePercent: Math.round(vPercent)
-        };
-      });
+          // Map to match StocktakeRecord interface if necessary
+          const mappedRecords: StocktakeRecord[] = data.records.map((r: any) => {
+            // If variancePercentage is a decimal (e.g. 1.0 for 100%), multiply by 100
+            let vPercent = r.variancePercentage || 0;
+            if (Math.abs(vPercent) <= 2 && vPercent !== 0) {
+              vPercent = vPercent * 100;
+            }
+            
+            return {
+              ...r,
+              quantity: r.originalQuantity, // Ensure field name matches
+              physicalQty: r.physicalQty || r.physicalCount, // Ensure field name matches
+              variancePercent: Math.round(vPercent)
+            };
+          });
           setRecords(mappedRecords);
         }
       } else {
-        const errorData = await res.json();
-        toast.error(`Records Fetch Failed: ${errorData.error || 'Unknown error'}`);
+        const errorData = await res.json().catch(() => ({ error: 'Unknown server error' }));
+        console.error('Fetch Records Status Error:', res.status, errorData);
+        if (res.status === 401) {
+          toast.error('Session expired. Please log in again.');
+        } else if (res.status === 403) {
+          toast.error('Access Denied: Check spreadsheet permissions.');
+        } else {
+          toast.error(`Fetch Error: ${errorData.error || 'Failed to fetch'}`);
+        }
       }
     } catch (error) {
       console.error('Failed to fetch records from Google Sheets', error);
+      toast.error('Network error while connecting to sync service.');
     } finally {
       setIsSyncing(false);
     }
@@ -192,7 +203,6 @@ export function useInventory() {
               barcode: record.barcode || '',
               barcodeScanned: record.barcodeScanned || '',
               originalQuantity: record.originalQuantity || 0,
-              expectedQuantity: record.expectedQuantity || 0,
               physicalQty: record.physicalQty || 0,
               physicalCount: record.physicalCount || 0,
               unitType: record.unitType || 'Piece',

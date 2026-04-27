@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, LogIn, LogOut, Save, CheckCircle2, AlertCircle, Database } from 'lucide-react';
+import { Settings, LogIn, LogOut, Save, CheckCircle2, AlertCircle, Database, Sparkles } from 'lucide-react';
 
 export function SettingsView() {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -186,32 +186,137 @@ export function SettingsView() {
             <li><b>SHEETS_API_KEY</b>: For reading products (Spreadsheet must be public).</li>
             <li><b>SCRIPTS_URL</b>: Google Apps Script Web App URL for saving records (Full automation).</li>
           </ul>
-          <p className="mt-3 font-semibold">Google Apps Script Code (for SCRIPTS_URL):</p>
-          <pre className="bg-gray-900 text-gray-100 p-3 rounded-xl text-[10px] mt-1 overflow-x-auto font-mono">
-{`function doPost(e) {
-  const data = JSON.parse(e.postData.contents);
-  const ss = SpreadsheetApp.openById(data.spreadsheetId);
-  const date = new Date(data.timestamp);
-  const sheetName = date.getFullYear() + "-" + 
-    String(date.getMonth() + 1).padStart(2, "0") + "-" + 
-    String(date.getDate()).padStart(2, "0");
-  
-  let sheet = ss.getSheetByName(sheetName);
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
-    sheet.appendRow(['Category', 'Product Name', 'Variant', 'Description', 'SKU', 'Barcode', 'Original Qty', 'Physical Qty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status']);
+          <p className="mt-3 font-semibold text-blue-900 flex items-center gap-2">
+            <Sparkles className="w-4 h-4" /> Google Apps Script Code (Required for Cloud Sync):
+          </p>
+          <div className="relative group mt-2">
+            <pre className="bg-gray-900 text-green-400 p-4 rounded-xl text-[11px] overflow-x-auto font-mono border-2 border-blue-200 group-hover:border-blue-400 transition-colors">
+{`/**
+ * INVENTORY SCANNER PRO - CLOUD SYNC SCRIPT v2.0
+ * 
+ * Instructions:
+ * 1. Open your Google Sheet.
+ * 2. Extensions -> Apps Script.
+ * 3. Replace all code with this snippet.
+ * 4. Click 'Deploy' -> 'New Deployment'.
+ * 5. Select type: 'Web App'.
+ * 6. Execute as: 'Me'.
+ * 7. Who has access: 'Anyone'.
+ * 8. COPY THE URL and paste it into the SCRIPTS_URL environment variable in AI Studio.
+ */
+
+function doGet(e) {
+  return ContentService.createTextOutput(JSON.stringify({ 
+    status: "ok", 
+    message: "Apps Script is reachable", 
+    timestamp: new Date().toISOString() 
+  })).setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  try {
+    if (!e || !e.postData || !e.postData.contents) {
+      throw new Error("No post data received");
+    }
+    
+    const data = JSON.parse(e.postData.contents);
+    if (!data.spreadsheetId) throw new Error("Missing Spreadsheet ID");
+    
+    const ss = SpreadsheetApp.openById(data.spreadsheetId);
+    if (!ss) throw new Error("Could not open Spreadsheet. Verify ID and Permissions.");
+    
+    // Determine sheet name based on provided info or date
+    const date = new Date(data.timestamp || new Date());
+    let sheetName = data.sheetName;
+    
+    if (!sheetName) {
+      const dateStr = date.getFullYear() + "-" + 
+        String(date.getMonth() + 1).padStart(2, "0") + "-" + 
+        String(date.getDate()).padStart(2, "0");
+      
+      let prefix = "Scan-";
+      if (data.isNewProduct) prefix = "New-";
+      else if (data.mode === "Receiving") prefix = "Receiving-";
+      
+      sheetName = prefix + dateStr;
+    }
+    
+    let sheet = ss.getSheetByName(sheetName);
+    if (!sheet) {
+      sheet = ss.insertSheet(sheetName);
+      sheet.appendRow(['Category', 'Product Name', 'Variant', 'Description', 'SKU', 'Barcode', 'Original Qty', 'Physical Qty', 'Unit Type', 'Variance', 'Variance %', 'Timestamp', 'User', 'Status', 'Auditor']);
+      sheet.getRange(1, 1, 1, 15).setFontWeight("bold").setBackground("#f3f3f3");
+    }
+    
+    const physicalCount = data.physicalCount !== undefined ? data.physicalCount : (data.physicalQty !== undefined ? data.physicalQty : (data.quantity !== undefined ? data.quantity : 0));
+    const originalQty = data.originalQuantity || 0;
+    const variance = physicalCount - originalQty;
+    const variancePct = originalQty === 0 ? (variance > 0 ? "100%" : "0%") : (Math.round((variance / originalQty) * 1000) / 10) + "%";
+    
+    // Check if updating an existing record (by ID in column A)
+    if (data.update && data.id) {
+      const values = sheet.getRange("A:A").getValues();
+      for (let i = 0; i < values.length; i++) {
+        if (values[i][0] == data.id) {
+          const rowNum = i + 1;
+          sheet.getRange(rowNum, 1, 1, 15).setValues([[
+            data.id,
+            data.productName || "Unknown",
+            data.variant || "",
+            data.description || "",
+            data.sku || "",
+            data.barcode || "",
+            originalQty,
+            physicalCount,
+            data.unitType || "Piece",
+            variance,
+            variancePct,
+            data.timestamp || new Date().toISOString(),
+            data.userEmail || data.user || "System",
+            data.status || "Updated",
+            data.auditor || ""
+          ]]);
+          return ContentService.createTextOutput(JSON.stringify({ success: true, action: "update" }))
+            .setMimeType(ContentService.MimeType.JSON);
+        }
+      }
+    }
+    
+    // Append new record
+    sheet.appendRow([
+      data.id || Utilities.getUuid(),
+      data.productName || "Unknown", 
+      data.variant || "", 
+      data.description || "",
+      data.sku || "", 
+      data.barcode || "", 
+      originalQty, 
+      physicalCount, 
+      data.unitType || "Piece",
+      variance, 
+      variancePct,
+      data.timestamp || new Date().toISOString(), 
+      data.userEmail || data.user || "System", 
+      data.status || "Synced",
+      data.auditor || ""
+    ]);
+    
+    return ContentService.createTextOutput(JSON.stringify({ success: true, action: "insert" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  } catch (err) {
+    console.error("Cloud Sync Error: " + err.message);
+    return ContentService.createTextOutput(JSON.stringify({ success: false, error: err.message }))
+      .setMimeType(ContentService.MimeType.JSON);
   }
-  
-  sheet.appendRow([
-    data.category, data.productName, data.variant || "", data.description || "",
-    data.sku, data.barcode, data.originalQuantity, data.quantity, data.unitType === "Piece" ? "pcs" : "case",
-    data.variance, data.originalQuantity === 0 ? (data.variance > 0 ? "100%" : "0%") : (Math.round((data.variance / data.originalQuantity) * 1000) / 10) + "%",
-    data.timestamp, data.user, data.status
-  ]);
-  
-  return ContentService.createTextOutput("Success").setMimeType(ContentService.MimeType.TEXT);
 }`}
-          </pre>
+            </pre>
+          </div>
+          <div className="mt-4 bg-yellow-50 border border-yellow-100 p-4 rounded-xl text-xs text-yellow-800">
+            <p className="font-bold mb-1 flex items-center gap-1">
+              <AlertCircle className="w-3 h-3" /> Note on "JavaScript runtime exited unexpectedly":
+            </p>
+            <p>If you see this error in your logs, check your Google Apps Script 'Executions' tab. This usually happens if the script owner doesn't have access to the target Spreadsheet ID or if Google's internal services are temporarily interrupted.</p>
+          </div>
           <p className="mt-3 font-semibold">Required Sheet Structure:</p>
           <ul className="list-disc pl-5 space-y-1 mt-1">
             <li><b>Products</b>: Category, Name, VariantName, Description, SKU, Barcode, Barcode1, Barcode2, Barcode3, Quantity</li>

@@ -54,18 +54,26 @@ async function startServer() {
       const targetUrl = email 
         ? `${scriptsUrl}?email=${encodeURIComponent(email as string)}`
         : scriptsUrl;
-      console.log(`Fetching from Apps Script: ${targetUrl}`);
+      console.log(`Fetching permissions from Apps Script: ${targetUrl}`);
       
       const response = await fetch(targetUrl);
       const contentType = response.headers.get('content-type');
-      const text = await response.text();
+      let text = '';
+      try {
+        text = await response.text();
+      } catch (readError) {
+        console.error('Error reading Apps Script response body:', readError);
+      }
       
       console.log(`Apps Script response status: ${response.status}`);
       console.log(`Apps Script response content-type: ${contentType}`);
 
       if (!response.ok) {
-        console.error(`Apps Script error response: ${text}`);
-        return res.status(response.status).json({ error: `Apps Script responded with ${response.status}` });
+        console.error(`Apps Script error response (${response.status}): ${text.substring(0, 1000)}`);
+        return res.status(response.status).json({ 
+          error: `Apps Script responded with ${response.status}`,
+          details: text.substring(0, 500)
+        });
       }
 
       try {
@@ -73,13 +81,14 @@ async function startServer() {
         res.json(data);
       } catch (parseError) {
         console.error('Failed to parse Apps Script response as JSON:', parseError);
-        console.error('Raw response text:', text.substring(0, 500) + (text.length > 500 ? '...' : ''));
+        console.error('Raw response text (first 500 chars):', text.substring(0, 500));
         
         // If it's HTML, it's likely a login page or error page from Google
         if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
           return res.status(500).json({ 
-            error: 'Apps Script returned an HTML page instead of JSON. This usually means the script is not published as "Anyone" or requires a Google login.',
-            isHtml: true
+            error: 'Apps Script returned an HTML page instead of JSON. This usually means the script is not published as "Anyone" or requires a Google login, or a runtime error occurred.',
+            isHtml: true,
+            htmlSnippet: text.substring(0, 200)
           });
         }
         
@@ -105,6 +114,8 @@ async function startServer() {
         redirect_uri: getRedirectUri(),
         scope: [
           'https://www.googleapis.com/auth/spreadsheets',
+          'https://www.googleapis.com/auth/drive.file',
+          'https://www.googleapis.com/auth/drive.readonly',
           'https://www.googleapis.com/auth/userinfo.profile',
           'https://www.googleapis.com/auth/userinfo.email'
         ],
@@ -186,12 +197,8 @@ async function startServer() {
   // Middleware to check auth
   const extractSpreadsheetId = (idOrUrl: string): string => {
     if (!idOrUrl) return '';
-    if (idOrUrl.includes('/spreadsheets/d/')) {
-      const match = idOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
-      return match ? match[1] : idOrUrl;
-    }
-    // Handle potential junk or combined strings
-    return idOrUrl.split(/[?#]/)[0].trim();
+    const match = idOrUrl.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
+    return match ? match[1] : idOrUrl;
   };
 
   const fetchProductsInternal = async (spreadsheetId: string, authClient: any) => {
@@ -255,31 +262,59 @@ async function startServer() {
   };
 
   const logError = (prefix: string, error: any) => {
-    let errorData = error;
-    
-    // If error is a string that looks like JSON, try to parse it
-    if (typeof error === 'string' && (error.startsWith('{') || error.startsWith('['))) {
-      try {
-        errorData = JSON.parse(error);
-      } catch (e) {
-        // Not JSON, keep as string
+    // Handle simple string errors
+    if (typeof error === 'string') {
+      const isHtml = error.includes('<!DOCTYPE') || error.includes('<html');
+      console.error(`[${prefix}] String Error:`, error.substring(0, 1000));
+      if (isHtml) {
+        console.error('Hint: Apps Script returned HTML. This usually means the script is NOT published as "Anyone" or requires Google login.');
       }
+      return;
     }
 
-    if (errorData && errorData.response && errorData.response.data) {
-      const data = errorData.response.data;
-      const message = data.error?.message || JSON.stringify(data);
-      const code = data.error?.code || 'UNKNOWN';
-      console.error(`${prefix} [${code}]: ${message}`);
-    } else if (errorData && errorData.error && typeof errorData.error === 'object') {
-      // Handle already parsed Google style errors
-      const message = errorData.error.message || JSON.stringify(errorData.error);
-      const code = errorData.error.code || 'UNKNOWN';
-      console.error(`${prefix} [${code}]: ${message}`);
-    } else if (errorData instanceof Error) {
-      console.error(`${prefix}:`, errorData.message);
+    // Handle Google API Response Errors
+    if (error && error.response && error.response.data) {
+      const gError = error.response.data.error || error.response.data;
+      console.error(`[${prefix}] API Error Structure:`, JSON.stringify(gError, null, 2));
+
+      const code = gError.code;
+      const status = gError.status;
+      const message = gError.message || '';
+
+      // Check for ErrorInfo details
+      const errorInfo = gError.details?.find((d: any) => d['@type']?.includes('ErrorInfo'));
+
+      // If it's a known configuration error, log a concise warning instead of full blob
+      if (errorInfo?.reason === 'API_KEY_INVALID' || code === 403 || code === 401 || code === 400) {
+        console.warn(`[${prefix}] Configuration Issue: ${errorInfo?.reason || status || code} - ${message}`);
+        return;
+      }
+
+      console.error(`[${prefix}] API Error Structure:`, JSON.stringify(gError, null, 2));
+
+      // Friendly explanations for common status codes
+      if (code === 403 || status === 'PERMISSION_DENIED') {
+        console.error(`[${prefix}] ACCESS DENIED: Ensure you have granted permissions and the sheet belongs to the correct account.`);
+      } else if (code === 401 || status === 'UNAUTHENTICATED') {
+        console.error(`[${prefix}] SESSION EXPIRED: Please log out and log in again to refresh your Google token.`);
+      } else if (code === 404 || status === 'NOT_FOUND') {
+        console.error(`[${prefix}] NOT FOUND: The spreadsheet ID or sheet name might be incorrect.`);
+      } else if (code === 400 || status === 'INVALID_ARGUMENT') {
+        console.error(`[${prefix}] INVALID REQUEST: Potential range error or malformed Spreadsheet ID.`);
+      } else if (code === 429) {
+        console.error(`[${prefix}] RATE LIMIT: You are sending requests too fast. Please wait a moment.`);
+      } else if (message) {
+        console.error(`[${prefix}] Message: ${message}`);
+      }
+    } else if (error instanceof Error) {
+      console.error(`[${prefix}] JS Error:`, error.message);
+      if (error.stack) console.error(error.stack);
     } else {
-      console.error(`${prefix}:`, errorData);
+      try {
+        console.error(`[${prefix}] Unknown Object:`, JSON.stringify(error, null, 2));
+      } catch (e) {
+        console.error(`[${prefix}] Unknown Non-String:`, error);
+      }
     }
   };
 
@@ -309,84 +344,39 @@ async function startServer() {
   app.get('/api/sheets/products', async (req, res) => {
     let { spreadsheetId } = req.query;
     if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
-      return res.status(400).json({ error: 'Valid Spreadsheet ID required' });
+      return res.json({ products: [] });
     }
     
     spreadsheetId = extractSpreadsheetId(spreadsheetId as string);
 
     const authClient = getAuthClient(req);
     
-    // If we have an auth client (OAuth or API Key), use the official API
-    if (authClient) {
-      try {
-        const sheets = google.sheets({ version: 'v4', auth: authClient as any });
-
-        const spreadsheet = await sheets.spreadsheets.get({
-          spreadsheetId: spreadsheetId as string,
-        });
-
-        const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
-        const targetSheetName = sheetNames.includes('Products') ? 'Products' : sheetNames[0];
-
-        if (!targetSheetName) {
-          throw new Error('No sheets found in the document');
-        }
-
-        const response = await sheets.spreadsheets.values.get({
-          spreadsheetId: spreadsheetId as string,
-          range: `'${targetSheetName}'!A2:J`, // Adjust based on columns
-        });
-
-        const rows = response.data.values || [];
-        const products = rows.map(row => ({
-          category: row[0] || '',
-          name: row[1] || '',
-          variantName: row[2] || '',
-          description: row[3] || '',
-          sku: row[4] || '',
-          barcode: row[5] || '',
-          barcode1: row[6] || '',
-          barcode2: row[7] || '',
-          barcode3: row[8] || '',
-          quantity: parseInt(row[9], 10) || 0,
-        }));
-
-        return res.json({ products });
-      } catch (error: any) {
-        logError('Sheets API Error', error);
-        
-        // Pass specific errors like 429 back to client if possible
-        if (error.response?.status === 429) {
-          return res.status(429).json({ 
-            error: 'Google Sheets API Quota Exceeded. Please try again in a minute.',
-            details: error.response.data?.error?.message
-          });
-        }
-        // Fallback to public fetch if official API fails
-      }
+    // If no auth client, return empty instead of trying public fallback (which might error)
+    if (!authClient) {
+      return res.json({ products: [] });
     }
 
-    // Fallback: Try to fetch public CSV if no auth or official API failed
     try {
-      // We try to fetch the 'Products' sheet or the first sheet as CSV
-      // Note: This requires the spreadsheet to be "Published to the web" or "Anyone with the link can view"
-      const csvUrl = `https://docs.google.com/spreadsheets/d/${spreadsheetId}/gviz/tq?tqx=out:csv&sheet=Products`;
-      const response = await fetch(csvUrl);
-      
-      if (!response.ok) {
-        throw new Error('Failed to fetch public CSV');
-      }
+      const sheets = google.sheets({ version: 'v4', auth: authClient as any });
 
-      const csvText = await response.text();
-      // Simple CSV parser (assuming no complex quoting for now, or use a library if needed)
-      // For this app, we'll do a basic split
-      const rows = csvText.split('\n').map(line => {
-        // Handle basic quoting: "val1","val2"
-        return line.split(',').map(cell => cell.replace(/^"(.*)"$/, '$1'));
+      const spreadsheet = await sheets.spreadsheets.get({
+        spreadsheetId: spreadsheetId as string,
       });
 
-      // Skip header row
-      const products = rows.slice(1).filter(row => row.length >= 6).map(row => ({
+      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title) || [];
+      const targetSheetName = sheetNames.includes('Products') ? 'Products' : sheetNames[0];
+
+      if (!targetSheetName) {
+        return res.json({ products: [] });
+      }
+
+      const response = await sheets.spreadsheets.values.get({
+        spreadsheetId: spreadsheetId as string,
+        range: `'${targetSheetName}'!A2:J`, // Adjust based on columns
+      });
+
+      const rows = response.data.values || [];
+      const products = rows.map(row => ({
         category: row[0] || '',
         name: row[1] || '',
         variantName: row[2] || '',
@@ -399,44 +389,46 @@ async function startServer() {
         quantity: parseInt(row[9], 10) || 0,
       }));
 
-      res.json({ products });
-    } catch (error) {
-      logError('Public Sync Error', error);
-      res.status(401).json({ error: 'No authentication configured and public sync failed. Please log in or provide a SHEETS_API_KEY.' });
+      return res.json({ products });
+    } catch (error: any) {
+      // Gracefully return empty if spreadsheet is not accessible, rate limited, or ID is malformed
+      const status = error?.response?.status;
+      if (status === 400 || status === 403 || status === 429 || status === 404) {
+        return res.json({ products: [] });
+      }
+      logError('Sheets API Error', error);
+      return res.json({ products: [] });
     }
   });
 
   app.get('/api/sheets/records', async (req, res) => {
     let { spreadsheetId } = req.query;
     if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
-      return res.status(400).json({ error: 'Valid Spreadsheet ID required' });
+      return res.json({ records: [] });
     }
 
     spreadsheetId = extractSpreadsheetId(spreadsheetId as string);
 
     const authClient = getAuthClient(req);
-    if (!authClient) return res.status(401).json({ error: 'Authentication required' });
+    if (!authClient) return res.json({ records: [] });
 
     try {
       const sheets = google.sheets({ version: 'v4', auth: authClient as any });
       
-      let sheetNames: string[] = [];
+      let spreadsheet;
       try {
-        const spreadsheet = await sheets.spreadsheets.get({
+        spreadsheet = await sheets.spreadsheets.get({
           spreadsheetId: spreadsheetId as string,
         });
-        sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title || '') || [];
-      } catch (metaErr: any) {
-        // If meta fetch fails (common with API keys and restricted spreadsheets), 
-        // fallback to common sheet names if it was an API key error
-        if (typeof authClient === 'string') {
-          console.warn('Metadata fetch failed with API Key, falling back to standard sheet names');
-          sheetNames = ['Scan-', 'Receiving-', 'New-', 'Products']; 
-        } else {
-          throw metaErr;
+      } catch (e: any) {
+        const status = e.response?.status;
+        if (status === 400 || status === 401 || status === 403 || status === 404 || status === 429) {
+          return res.json({ records: [] });
         }
+        throw e;
       }
 
+      const sheetNames = spreadsheet.data.sheets?.map(s => s.properties?.title || '') || [];
       const scanSheets = sheetNames.filter(s => 
         (s.startsWith('Scan-') || s.startsWith('Receiving-') || s.startsWith('New-')) && 
         s !== 'Permissions'
@@ -452,39 +444,33 @@ async function startServer() {
         try {
           const response = await sheets.spreadsheets.values.get({
             spreadsheetId: spreadsheetId as string,
-            range: `'${sheetName}'!A2:R`, // Fetch up to column R (18 columns)
+            range: `'${sheetName}'!A2:O`, // Fetch up to column O (15 columns)
           });
 
           const rows = response.data.values || [];
           const sheetRecords = rows
-            .filter(row => row[3]) // Ensure Product Name exists
+            .filter(row => row[1]) // Ensure Product Name exists (Index 1)
             .map((row, index) => {
-              // Version 23.0 Unified Mapping:
-              // ID: row[0]
-              // Store: row[1]
-              // Product Name: row[3]
-              // Physical/Received: row[9]
-              // Original Qty: row[8]
-              // Scanner: row[13]
-              // Status: row[14]
-              
+              // Mapping based on: Category, Product Name, Variant, Description, SKU, Barcode, Original Qty, Physical Qty, Unit Type, Variance, Variance %, Timestamp, User, Status
               const isReceiving = sheetName.startsWith('Receiving-');
               return {
-                id: row[0] || `${sheetName}-row-${index}`,
-                category: row[2] || '', // Assuming Category is row[2]
-                storeLocation: row[1] || '',
-                productName: row[3] || '',
-                variant: row[4] || '',
-                barcode: row[7] || '',
-                originalQuantity: parseFloat(row[8]) || 0,
-                physicalQty: parseFloat(row[9]) || 0,
-                physicalCount: parseFloat(row[9]) || 0,
-                variance: parseFloat(row[11]) || 0,
-                variancePercentage: parseFloat(row[12]) || 0,
-                user: row[13] || 'Unknown',
-                status: row[14] || 'Pending',
-                auditor: row[15] || '',
-                timestamp: row[16] || new Date().toISOString(),
+                id: `${sheetName}-${index}`, // Unique ID for table keys
+                category: row[0] || '',
+                productName: row[1] || '',
+                variant: row[2] || '',
+                description: row[3] || '',
+                sku: row[4] || '',
+                barcode: row[5] || '',
+                originalQuantity: parseFloat(row[6]) || 0,
+                physicalQty: parseFloat(row[7]) || 0,
+                physicalCount: parseFloat(row[7]) || 0,
+                unitType: row[8] || 'Piece',
+                variance: parseFloat(row[9]) || 0,
+                variancePercentage: parseFloat(row[10]) || 0,
+                timestamp: row[11] || new Date().toISOString(),
+                user: row[12] || 'Unknown',
+                status: row[13] || 'Pending',
+                auditor: row[14] || '',
                 mode: isReceiving ? 'Receiving' : 'Stocktake',
                 isNewProduct: sheetName.startsWith('New-'),
                 sheetName: sheetName,
@@ -502,14 +488,9 @@ async function startServer() {
       allRecords.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
       res.json({ records: allRecords });
-    } catch (error: any) {
+    } catch (error) {
       logError('Fetch Records Error', error);
-      const status = error.response?.status || 500;
-      const message = error.response?.data?.error?.message || 'Failed to fetch records from Google Sheets';
-      res.status(status).json({ 
-        error: message,
-        code: error.response?.data?.error?.code
-      });
+      res.json({ records: [] });
     }
   });
 
@@ -533,6 +514,8 @@ async function startServer() {
           sku: record.sku || '',
           barcode: record.barcode || '',
           originalQuantity: record.originalQuantity || 0,
+          physicalQty: record.physicalCount || 0,
+          quantity: record.physicalCount || 0, // Backward compatibility for script
           physicalCount: record.physicalCount || 0,
           unitType: record.unitType || 'Piece',
           variance: record.variance || 0,

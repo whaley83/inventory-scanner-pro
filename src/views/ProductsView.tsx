@@ -63,8 +63,8 @@ export function ProductsView({ products, aliases, onSync, isSyncing, onStartActi
                 <th className="p-3 font-medium whitespace-nowrap">Product Name</th>
                 <th className="p-3 font-medium whitespace-nowrap">Variant</th>
                 <th className="p-3 font-medium min-w-[200px]">Description</th>
-                <th className="p-3 font-medium whitespace-nowrap">SKU</th>
                 <th className="p-3 font-medium whitespace-nowrap">Barcode</th>
+                <th className="p-3 font-medium min-w-[200px]">Description</th>
                 <th className="p-3 font-medium whitespace-nowrap">Barcode 1</th>
                 <th className="p-3 font-medium whitespace-nowrap">Barcode 2</th>
                 <th className="p-3 font-medium whitespace-nowrap">Barcode 3</th>
@@ -73,7 +73,7 @@ export function ProductsView({ products, aliases, onSync, isSyncing, onStartActi
             <tbody className="divide-y divide-gray-100">
               {filteredProducts.map((product, index) => (
                 <tr 
-                  key={`${product.sku}-${product.barcode}-${index}`} 
+                  key={`${product.barcode}-${index}`} 
                   className="hover:bg-gray-50 transition-colors cursor-pointer"
                   onClick={() => handleRowClick(product)}
                 >
@@ -81,7 +81,6 @@ export function ProductsView({ products, aliases, onSync, isSyncing, onStartActi
                   <td className="p-3 font-medium text-gray-900">{product.name}</td>
                   <td className="p-3 text-gray-600">{product.variantName}</td>
                   <td className="p-3 text-gray-500 truncate max-w-[250px]" title={product.description}>{product.description}</td>
-                  <td className="p-3 font-mono text-xs text-gray-600">{product.sku}</td>
                   <td className="p-3 font-mono text-xs text-blue-600">{product.barcode}</td>
                   <td className="p-3 font-mono text-xs text-gray-500">{product.barcode1}</td>
                   <td className="p-3 font-mono text-xs text-gray-500">{product.barcode2}</td>
@@ -116,7 +115,7 @@ export function ProductsView({ products, aliases, onSync, isSyncing, onStartActi
                 onClick={() => handleModeSelect('Stocktake')}
                 className="flex flex-col items-center justify-center p-4 bg-blue-50 text-blue-700 rounded-xl hover:bg-blue-100 transition-colors font-bold border border-blue-100"
               >
-                Stock Take
+                Stocktake
               </button>
               <button
                 onClick={() => handleModeSelect('Receiving')}

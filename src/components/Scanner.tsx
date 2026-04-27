@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { Html5Qrcode } from 'html5-qrcode';
-import { X, Camera, Type, AlertCircle, Loader2, Sparkles } from 'lucide-react';
+import { X, Camera, AlertCircle, Loader2, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
 import { GoogleGenAI } from "@google/genai";
 
 interface ScannerProps {
-  onScan: (barcode: string, base64Image?: string) => void;
+  onScan: (barcode: string) => void;
   onAIIdentify: (base64: string) => Promise<void>;
   onClose: () => void;
   spreadsheetId?: string;
@@ -18,138 +18,23 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
   const [mode, setMode] = useState<ScanMode>('BARCODE');
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [resetKey, setResetKey] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
+
   const isTransitioning = useRef(false);
 
-  const [currentCameraIndex, setCurrentCameraIndex] = useState(0);
-  const [availableCameras, setAvailableCameras] = useState<any[]>([]);
-  const [zoom, setZoom] = useState(1);
-  const [isIPhonePro, setIsIPhonePro] = useState(false);
-  const scanTimerRef = useRef<NodeJS.Timeout | null>(null);
-
   useEffect(() => {
-    // Detect iPhone Pro models which have the focus issue
-    const ua = navigator.userAgent;
-    if (/iPhone/i.test(ua) && (ua.includes('Pro') || window.screen.height >= 812)) {
-      setIsIPhonePro(true);
-      // For Pro models, we default to 1.5x to help with focus distance
-      setZoom(1.5); 
-    }
-    
-    // Auto-detection of cameras with strict priority for iPhone 17 Pro focus issues
-    const initCameras = async () => {
-      try {
-        const devices = await Html5Qrcode.getCameras();
-        if (devices && devices.length > 0) {
-          // Priority sorting for macro/back cameras
-          const sorted = [...devices].sort((a, b) => {
-            const aLabel = (a.label || '').toLowerCase();
-            const bLabel = (b.label || '').toLowerCase();
-            
-            // Ultra Wide is priority 1 for iPhone focus issues
-            const ultraWideKeywords = ['ultra wide', 'ultra-wide', 'macro', '0.5x'];
-            const backKeywords = ['back', 'rear', 'main', 'camera 0', '1x', 'facing back'];
-            
-            const aIsUltra = ultraWideKeywords.some(k => aLabel.includes(k));
-            const bIsUltra = ultraWideKeywords.some(k => bLabel.includes(k));
-            
-            if (aIsUltra && !bIsUltra) return -1;
-            if (!aIsUltra && bIsUltra) return 1;
-            
-            const aIsBack = backKeywords.some(k => aLabel.includes(k));
-            const bIsBack = backKeywords.some(k => bLabel.includes(k));
-            
-            if (aIsBack && !bIsBack) return -1;
-            if (!aIsBack && bIsBack) return 1;
-            
-            // If labels are empty (Safari can be weird), we can't do much here, 
-            // but usually the first one is front and last ones are back.
-            return 0;
-          });
-
-          // Final safety check: if none match keywords, try to pick the last one as back
-          const hasBackKeyword = sorted.some(d => 
-            ['back', 'rear', 'main', 'camera 0', '1x'].some(k => (d.label || '').toLowerCase().includes(k))
-          );
-          
-          if (!hasBackKeyword && sorted.length > 1) {
-            // Reverse so last camera (likely back) is first
-            setAvailableCameras([...sorted].reverse());
-          } else {
-            setAvailableCameras(sorted);
-          }
-        }
-      } catch (e) {
-        console.warn("Camera enumeration failed:", e);
-      }
-    };
-    initCameras();
-    
-    // Inject CSS to fix library specific UI issues and ensure 16:9 aspect ratio
-    const styleId = 'scanner-ui-fix';
-    if (!document.getElementById(styleId)) {
-      const style = document.createElement('style');
-      style.id = styleId;
-      style.innerHTML = `
-        #reader { 
-          border: none !important; 
-          position: relative !important; 
-          width: 100% !important; 
-          height: auto !important; 
-          aspect-ratio: 16 / 9 !important; 
-          background: black !important; 
-          overflow: hidden !important; 
-        }
-        #reader__scan_region { 
-          border: none !important; 
-          height: 100% !important; 
-          width: 100% !important; 
-          display: flex !important; 
-          align-items: center !important; 
-          justify-content: center !important; 
-          position: relative !important; 
-        }
-        #reader__scan_region > video { 
-          display: block !important; 
-          object-fit: cover !important; 
-          width: 100% !important; 
-          height: 100% !important; 
-          position: absolute !important;
-          top: 0 !important;
-          left: 0 !important;
-        }
-        #reader__scan_region > div { display: none !important; pointer-events: none !important; opacity: 0 !important; }
-        #reader__dashboard { display: none !important; }
-        #reader__status_span { display: none !important; }
-        /* Hide library injected qr-shaded-region and overlays */
-        [id*="qr-shaded-region"] { display: none !important; border: none !important; }
-        [id*="reader__scan_region"] div { border: none !important; background: none !important; display: none !important; }
-      `;
-      document.head.appendChild(style);
-    }
-
     const handleModeChange = async () => {
       if (isTransitioning.current) return;
       isTransitioning.current = true;
 
-      // Nuclear cleanup of any old camera streams
-      if ((window as any).localStream) {
-        (window as any).localStream.getTracks().forEach((t: any) => t.stop());
-        (window as any).localStream = null;
-      }
-
       try {
-        await stopCurrentStream();
-        
-        // Delay to allow OS to release camera hardware
-        await new Promise(resolve => setTimeout(resolve, 500));
-
         if (mode === 'BARCODE') {
+          stopCameraStream();
           await startBarcodeScanner();
         } else {
+          await stopBarcodeScanner();
           await startCameraStream();
         }
       } finally {
@@ -160,12 +45,103 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
     handleModeChange();
 
     return () => {
-      stopCurrentStream();
+      stopBarcodeScanner();
+      stopCameraStream();
     };
-  }, [mode, resetKey]);
+  }, [mode]);
 
-  const stopCurrentStream = async () => {
-    // 1. Explicitly stop barcode scanner library
+  const startBarcodeScanner = async () => {
+    try {
+      // Ensure any previous instance is cleaned up
+      if (html5QrCodeRef.current) {
+        try {
+          if (html5QrCodeRef.current.isScanning) {
+            await html5QrCodeRef.current.stop();
+          }
+        } catch (e) {
+          console.warn("Cleanup error:", e);
+        }
+        html5QrCodeRef.current = null;
+      }
+
+      // Küçük bir gecikme sağlamak için DOM'da olduğundan emin olun
+      await new Promise(resolve => setTimeout(resolve, 150));
+      
+      const html5QrCode = new Html5Qrcode("reader");
+      html5QrCodeRef.current = html5QrCode;
+
+      // Try to find the back camera specifically
+      let cameraId = { facingMode: "environment" };
+      try {
+        const cameras = await Html5Qrcode.getCameras();
+        if (cameras && cameras.length > 0) {
+          const backCamera = cameras.find(cam => 
+            cam.label.toLowerCase().includes('back') || 
+            cam.label.toLowerCase().includes('rear') || 
+            cam.label.toLowerCase().includes('camera 0') ||
+            cam.label.toLowerCase().includes('environment')
+          );
+          if (backCamera) {
+            cameraId = { deviceId: backCamera.id } as any;
+            console.log("Selected back camera:", backCamera.label);
+          }
+        }
+      } catch (e) {
+        console.warn("Camera enumeration failed, falling back to environment mode", e);
+      }
+
+      const config = { 
+        fps: 30, 
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0,
+        disableFlip: false,
+        rememberLastUsedCamera: true,
+        videoConstraints: {
+          facingMode: 'environment', // still helpful as secondary signal
+          focusMode: 'continuous',
+          exposureMode: 'continuous',
+          whiteBalanceMode: 'continuous'
+        } as any
+      };
+
+      await html5QrCode.start(
+        cameraId,
+        config,
+        async (decodedText) => {
+          if (isTransitioning.current) return;
+          isTransitioning.current = true;
+          try {
+            await html5QrCode.stop();
+            html5QrCodeRef.current = null;
+            onScan(decodedText);
+          } catch (err) {
+            console.error("Error stopping after scan:", err);
+            // Still call onScan even if stop fails
+            onScan(decodedText);
+          } finally {
+            isTransitioning.current = false;
+          }
+        },
+        (errorMessage) => {
+          // Ignore frequent scan errors
+        }
+      );
+      
+      // Apply object-fit contain to ensure full frame is visible
+      const videoElement = document.querySelector('#reader video') as HTMLVideoElement;
+      if (videoElement) {
+        videoElement.style.objectFit = 'cover';
+        videoElement.style.width = '100%';
+        videoElement.style.height = '100%';
+      }
+      setError(null);
+    } catch (err) {
+      console.error("Error starting barcode scanner:", err);
+      setError("Could not access camera. Please ensure you have granted permission and are using HTTPS.");
+    }
+  };
+
+  const stopBarcodeScanner = async () => {
     if (html5QrCodeRef.current) {
       try {
         if (html5QrCodeRef.current.isScanning) {
@@ -177,290 +153,83 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
         html5QrCodeRef.current = null;
       }
     }
-
-    // 2. Kill all active media tracks to prevent hardware locks
-    const activeStream = streamRef.current || (videoRef.current?.srcObject as MediaStream);
-    const scannerVideo = document.querySelector('#reader video') as HTMLVideoElement;
-    const scannerStream = scannerVideo?.srcObject as MediaStream;
-
-    const streamsToStop = [activeStream, scannerStream].filter(Boolean);
-    
-    streamsToStop.forEach(stream => {
-      stream!.getTracks().forEach(track => {
-        track.stop();
-        console.log("Explicitly stopped track:", track.label);
-      });
-    });
-
-    // 3. Nullify references and remove temporary styles
-    streamRef.current = null;
-    if (videoRef.current) videoRef.current.srcObject = null;
-    if (scannerVideo) scannerVideo.srcObject = null;
-    
-    document.getElementById('scanner-ui-fix')?.remove();
-  };
-
-  const resetCamera = async () => {
-    await stopCurrentStream();
-    await new Promise(resolve => setTimeout(resolve, 500));
-    setResetKey(prev => prev + 1);
-    toast.info("Camera resetting...");
-  };
-
-  const applyAdvancedConstraints = async (videoElement: HTMLVideoElement) => {
-    if (videoElement.srcObject) {
-      const stream = videoElement.srcObject as MediaStream;
-      const track = stream.getVideoTracks()[0];
-      if (track) {
-        try {
-          const capabilities = track.getCapabilities() as any;
-          const constraints: any = { advanced: [] };
-          
-          // iPhone 17 Pro Optimization: Force hardware zoom to help with MFD (Minimum Focus Distance)
-          const targetZoom = isIPhonePro ? Math.max(zoom, 1.5) : zoom;
-
-          if (capabilities.zoom) {
-            const minZoom = capabilities.zoom.min || 1;
-            const maxZoom = capabilities.zoom.max || 10;
-            const clampedZoom = Math.min(Math.max(targetZoom, minZoom), maxZoom);
-            constraints.advanced.push({ zoom: clampedZoom });
-          } else {
-            // Software Fallback
-            videoElement.style.transform = `scale(${targetZoom})`;
-            videoElement.style.transformOrigin = 'center center';
-          }
-
-          if (capabilities.focusMode?.includes('continuous')) {
-            constraints.advanced.push({ focusMode: 'continuous' });
-          }
-
-          if (constraints.advanced.length > 0) {
-            await track.applyConstraints(constraints);
-          }
-        } catch (e) {
-          console.log("Advanced constraints failed:", e);
-        }
-      }
-    }
-  };
-
-  const switchCamera = async () => {
-    if (availableCameras.length <= 1) {
-      toast.info("No other cameras detected.");
-      return;
-    }
-    const nextIndex = (currentCameraIndex + 1) % availableCameras.length;
-    setCurrentCameraIndex(nextIndex);
-    await resetCamera();
-  };
-
-  const startBarcodeScanner = async () => {
-    try {
-      // Nuclear cleanup of any previous tracks before starting
-      await stopCurrentStream();
-      
-      // Small delay for container stability
-      await new Promise(resolve => setTimeout(resolve, 300));
-      
-      // Start 2-second fallback timer
-      if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
-      scanTimerRef.current = setTimeout(() => {
-        if (mode === 'BARCODE' && !error) {
-          toast("Barcode taking too long?", {
-            description: "Try 'AI Identify' mode for faster results.",
-            action: {
-              label: "Switch to AI",
-              onClick: () => setMode('AI')
-            }
-          });
-        }
-      }, 3000); // 3 seconds fallback as requested
-
-      const html5QrCode = new Html5Qrcode("reader");
-      html5QrCodeRef.current = html5QrCode;
-
-      let cameraIdToUse = availableCameras[currentCameraIndex]?.id;
-      
-      // If we don't have a list yet, try to find one with strong back-priority
-      if (!cameraIdToUse) {
-        try {
-          const devices = await Html5Qrcode.getCameras();
-          if (devices && devices.length > 0) {
-            const backKeywords = ['back', 'rear', 'main', '1x', '0.5x', 'ultra'];
-            const back = devices.find(d => backKeywords.some(k => (d.label || '').toLowerCase().includes(k)));
-            cameraIdToUse = back ? back.id : devices[devices.length - 1].id; // Last one is usually back on Android
-          }
-        } catch (e) {}
-      }
-
-      const config = { 
-        fps: 25,
-        qrbox: (viewWidth: number, viewHeight: number) => {
-          const width = Math.max(50, Math.floor(viewWidth * (0.85 / zoom)));
-          const height = Math.max(50, Math.floor(viewWidth * (0.4 / zoom))); 
-          return { width, height };
-        },
-        aspectRatio: 1.777778,
-        disableFlip: false,
-        videoConstraints: {
-          facingMode: "environment", // Add this as a hint even with ID
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          aspectRatio: 1.777778
-        }
-      };
-
-      // Prefer facingMode override if no specific camera was chosen manually
-      const cameraParam = currentCameraIndex === 0 && !cameraIdToUse 
-        ? { facingMode: "environment" } 
-        : (cameraIdToUse ? { deviceId: { exact: cameraIdToUse } } : { facingMode: "environment" });
-      
-      try {
-        await html5QrCode.start(
-          cameraParam,
-          config,
-          handleScanSuccess,
-          () => {}
-        );
-      } catch (err) {
-        console.warn("Primary strategy failed:", err);
-        await html5QrCode.start({ facingMode: "environment" }, config, handleScanSuccess, () => {});
-      }
-      
-      await new Promise(resolve => setTimeout(resolve, 500));
-
-      const videoElement = document.querySelector('#reader video') as HTMLVideoElement;
-      if (videoElement) {
-        // Enforce iOS Safari compatibility attributes
-        videoElement.setAttribute('playsinline', 'true');
-        videoElement.setAttribute('webkit-playsinline', 'true');
-        videoElement.setAttribute('autoplay', 'true');
-        videoElement.muted = true;
-        
-        try {
-          await videoElement.play();
-        } catch (e) {
-          console.log("Auto-play blocked or failed:", e);
-        }
-
-        await applyAdvancedConstraints(videoElement);
-
-        videoElement.style.setProperty('object-fit', 'cover', 'important');
-        videoElement.style.width = '100%';
-        videoElement.style.height = '100%';
-      }
-      setError(null);
-    } catch (err) {
-      console.error("Error starting barcode scanner:", err);
-      setError("Camera could not be initialized. Please ensure camera permissions are granted.");
-    }
-  };
-
-  const handleScanSuccess = async (decodedText: string) => {
-    if (isTransitioning.current) return;
-    isTransitioning.current = true;
-    
-    // Clear timer
-    if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
-    try {
-      let base64Image: string | undefined;
-      const video = document.querySelector('#reader video') as HTMLVideoElement;
-      if (video && canvasRef.current) {
-        const canvas = canvasRef.current;
-        const context = canvas.getContext('2d');
-        if (context) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
-          context.drawImage(video, 0, 0);
-          base64Image = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
-        }
-      }
-
-      await stopCurrentStream();
-      onScan(decodedText, base64Image);
-    } catch (err) {
-      console.error("Error stopping after scan:", err);
-      onScan(decodedText);
-    } finally {
-      isTransitioning.current = false;
-    }
   };
 
   const startCameraStream = async () => {
     try {
-      await stopCurrentStream();
-
-      let cameraIdToUse = availableCameras[currentCameraIndex]?.id;
-
-      const preferredConstraints = {
+      // Try to find the back camera first
+      let constraints: any = {
         video: { 
-          deviceId: cameraIdToUse ? { exact: cameraIdToUse } : undefined,
-          facingMode: cameraIdToUse ? "environment" : { ideal: "environment" },
-          width: { ideal: 1280 },
-          height: { ideal: 720 },
-          aspectRatio: 1.777778
+          facingMode: { ideal: 'environment' },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
         }
       };
 
+      try {
+        const cameras = await Html5Qrcode.getCameras();
+        if (cameras && cameras.length > 0) {
+          const backCamera = cameras.find(cam => 
+            cam.label.toLowerCase().includes('back') || 
+            cam.label.toLowerCase().includes('rear') || 
+            cam.label.toLowerCase().includes('camera 0')
+          );
+          if (backCamera) {
+            constraints = {
+              video: {
+                deviceId: { exact: backCamera.id },
+                width: { ideal: 1920 },
+                height: { ideal: 1080 },
+                // Important for zoom stability and focus
+                focusMode: { ideal: 'continuous' } as any
+              }
+            };
+          }
+        }
+      } catch (e) {
+        console.warn("Camera enumeration failed for AI", e);
+      }
+
       let stream: MediaStream;
       try {
-        stream = await navigator.mediaDevices.getUserMedia(preferredConstraints);
-      } catch (err) {
-        console.warn("Exact AI hardware failed, using fallback...");
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: { 
-            facingMode: "environment",
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            aspectRatio: 1.777778
-          }
+        stream = await navigator.mediaDevices.getUserMedia(constraints);
+      } catch (e) {
+        console.warn("Failed with specific constraints, trying ideal environment:", e);
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { facingMode: 'environment' } 
         });
       }
 
       streamRef.current = stream;
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        
-        // iOS Safari Requirements
-        videoRef.current.setAttribute('playsinline', 'true');
-        videoRef.current.setAttribute('webkit-playsinline', 'true');
-        videoRef.current.setAttribute('autoplay', 'true');
-        videoRef.current.muted = true;
-        try {
-          await videoRef.current.play();
-        } catch (e) {
-          console.log("AI camera play failed:", e);
-        }
-
-        const track = stream.getVideoTracks()[0];
-        if (track) {
-          await applyAdvancedConstraints(videoRef.current!);
-        }
       }
       setError(null);
     } catch (err) {
-      console.error("Error accessing camera for identification:", err);
-      setError("Camera could not be initialized. Please check permissions.");
+      console.error("Error accessing camera for AI scanner:", err);
+      setError("Could not access camera. Please ensure permissions are granted.");
+    }
+  };
+
+  const stopCameraStream = () => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => track.stop());
+      streamRef.current = null;
     }
   };
 
   const captureAndIdentify = async () => {
-    if (!videoRef.current || !canvasRef.current || isIdentifying) return;
+    if (!videoRef.current || !canvasRef.current) return;
 
     setIsIdentifying(true);
-    // Explicitly clear any scan timers
-    if (scanTimerRef.current) clearTimeout(scanTimerRef.current);
-    
-    // Optimization: Delay capture slightly to allow focus
-    await new Promise(resolve => setTimeout(resolve, 800));
-
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const context = canvas.getContext('2d');
 
     if (context) {
-      const MAX_WIDTH = 1280;
-      const MAX_HEIGHT = 1280;
+      // Resize logic: max 1024px
+      const MAX_WIDTH = 1024;
+      const MAX_HEIGHT = 1024;
       let width = video.videoWidth;
       let height = video.videoHeight;
 
@@ -478,38 +247,16 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
 
       canvas.width = width;
       canvas.height = height;
-      
-      // Draw frame
       context.drawImage(video, 0, 0, width, height);
 
-      // AI Enhancement: Contrast and Sharpness
-      // This helps with "misty" iPhone sensors
-      const imageData = context.getImageData(0, 0, width, height);
-      const data = imageData.data;
-      const contrast = 1.2; // 20% boost
-      const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
-
-      for (let i = 0; i < data.length; i += 4) {
-        data[i] = factor * (data[i] - 128) + 128; // R
-        data[i + 1] = factor * (data[i + 1] - 128) + 128; // G
-        data[i + 2] = factor * (data[i + 2] - 128) + 128; // B
-      }
-      context.putImageData(imageData, 0, 0);
-
-      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.9);
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
       const base64Data = imageDataUrl.split(',')[1];
 
       try {
         await onAIIdentify(base64Data);
-        await stopCurrentStream();
-        onClose();
       } catch (error) {
         console.error("AI Identify Error:", error);
-        toast.error("AI could not identify product. Please try again with better light or enter manually.");
-        // Don't close automatically if it fails, maybe let user try again?
-        // But the previous logic closed it, so I'll keep it for now.
-        await stopCurrentStream();
-        onClose();
+        toast.error("AI could not identify product. Please enter manually.");
       } finally {
         setIsIdentifying(false);
       }
@@ -521,35 +268,11 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
       <div className="bg-white rounded-2xl w-full max-w-md overflow-hidden flex flex-col shadow-2xl">
         <div className="p-4 border-b flex justify-between items-center bg-gray-50">
           <h3 className="font-bold text-gray-900">
-            {mode === 'BARCODE' ? 'Scan Barcode' : 'Identify Product'}
+            {mode === 'BARCODE' ? 'Scan Barcode' : 'Scan Product Details'}
           </h3>
-          <div className="flex items-center gap-1">
-            {availableCameras.length > 1 && (
-              <button 
-                onClick={switchCamera}
-                className="flex items-center gap-1 text-gray-500 hover:text-blue-600 px-2 py-1 hover:bg-gray-200 rounded-lg transition-colors border border-gray-200"
-              >
-                <Camera size={18} />
-                <span className="text-[10px] font-bold uppercase">Flip</span>
-              </button>
-            )}
-            <button 
-              onClick={() => {
-                const nextZoom = zoom === 1 ? 2 : 1;
-                setZoom(nextZoom);
-                const video = mode === 'BARCODE' ? document.querySelector('#reader video') as HTMLVideoElement : videoRef.current;
-                if (video) {
-                  setTimeout(() => applyAdvancedConstraints(video), 10);
-                }
-              }}
-              className={`px-3 py-1 rounded-full text-xs font-bold transition-colors ${zoom > 1 ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-            >
-              {zoom}x
-            </button>
-            <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-2 hover:bg-gray-200 rounded-full transition-colors">
-              <X size={24} />
-            </button>
-          </div>
+          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 p-2 hover:bg-gray-200 rounded-full transition-colors">
+            <X size={24} />
+          </button>
         </div>
         
         <div className="flex border-b">
@@ -567,108 +290,101 @@ export function Scanner({ onScan, onAIIdentify, onClose, spreadsheetId }: Scanne
            </button>
         </div>
 
-        <div className="relative w-full bg-black min-h-[300px] flex items-center justify-center overflow-hidden" onClick={() => {
-          const video = mode === 'BARCODE' ? document.querySelector('#reader video') as HTMLVideoElement : videoRef.current;
-          if (video) applyAdvancedConstraints(video);
-        }}>
+        <div className="relative w-full bg-black min-h-[300px] flex items-center justify-center overflow-hidden">
           {error ? (
             <div className="p-8 text-center text-white flex flex-col items-center gap-4">
               <AlertCircle size={48} className="text-red-500" />
               <p className="font-medium">{error}</p>
-              <div className="flex gap-2">
-                <button 
-                  onClick={resetCamera}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors font-bold"
-                >
-                  Reset Camera
-                </button>
-                <button 
-                  onClick={() => window.location.reload()}
-                  className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg transition-colors"
-                >
-                  Reload App
-                </button>
-              </div>
+              <button 
+                onClick={() => window.location.reload()}
+                className="px-4 py-2 bg-white/20 hover:bg-white/30 rounded-lg transition-colors"
+              >
+                Reload App
+              </button>
             </div>
           ) : (
-            <div key={`${mode}-${resetKey}`} className="w-full h-full">
+            <>
               {mode === 'BARCODE' && (
-                  <div className="relative w-full aspect-[16/9] flex flex-col items-center overflow-hidden">
-                    <div id="reader" className="absolute inset-0"></div>
-                    <canvas ref={canvasRef} className="hidden" />
-                    
-                    {/* Overlay guide for barcode - Matches the 90% config */}
-                    <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center z-10">
-                      <div className="w-[90%] aspect-[9/4] relative">
-                        {/* Shading */}
-                        <div className="absolute inset-0 shadow-[0_0_0_2000px_rgba(0,0,0,0.7)] rounded-xl"></div>
-                        
-                        {/* Box outline */}
-                        <div className="absolute inset-0 border-2 border-white/30 rounded-xl"></div>
-                        
-                        {/* Corners - High Visibility */}
-                        <div className="absolute top-[-4px] left-[-4px] w-14 h-14 border-t-8 border-l-8 border-white rounded-tl-xl drop-shadow-xl"></div>
-                        <div className="absolute top-[-4px] right-[-4px] w-14 h-14 border-t-8 border-r-8 border-white rounded-tr-xl drop-shadow-xl"></div>
-                        <div className="absolute bottom-[-4px] left-[-4px] w-14 h-14 border-b-8 border-l-8 border-white rounded-bl-xl drop-shadow-xl"></div>
-                        <div className="absolute bottom-[-4px] right-[-4px] w-14 h-14 border-b-8 border-r-8 border-white rounded-br-xl drop-shadow-xl"></div>
-                        
-                        {/* Scanning line animation - Standard moving line */}
-                        <div className="absolute top-0 left-0 right-0 h-[2px] bg-red-500 animate-scan shadow-[0_0_15px_rgba(239,68,68,1)] z-20"></div>
-                      </div>
+                <div className="relative w-full h-full">
+                  <div id="reader" className="w-full h-auto min-h-[300px] flex items-center justify-center"></div>
+                  
+                  {/* Overlay guide for barcode - Fixed square */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[250px] h-[250px] relative">
+                      {/* Shading */}
+                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl border border-white/20"></div>
+                      
+                      {/* Corners - White larger borders */}
+                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
+                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
+                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
+                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
+                      
+                      {/* Scanning line animation */}
+                      <div className="absolute top-0 left-0 right-0 h-[2px] bg-red-500/50 animate-scan shadow-[0_0_8px_rgba(239,68,68,0.5)]"></div>
                     </div>
                   </div>
+                </div>
               )}
-
+              
               {mode === 'AI' && (
-                <div className="relative w-full aspect-[16/9] overflow-hidden bg-black flex items-center justify-center">
+                <>
                   <video 
                     ref={videoRef} 
                     autoPlay 
                     playsInline 
-                    muted
-                    className="absolute inset-0 w-full h-full object-cover"
+                    className="w-full h-full object-contain"
                   />
                   <canvas ref={canvasRef} className="hidden" />
                   
-                  <div className="absolute bottom-6 left-0 right-0 flex justify-center z-30">
+                  {isIdentifying && (
+                    <div className="absolute inset-0 bg-black/60 flex flex-col items-center justify-center z-10 animate-in fade-in duration-200">
+                      <div className="bg-white/10 backdrop-blur-md p-6 rounded-2xl flex flex-col items-center gap-4 border border-white/20">
+                        <Loader2 className="animate-spin text-white" size={48} />
+                        <div className="text-center">
+                          <p className="text-white font-bold text-lg">Scanning with AI...</p>
+                          <p className="text-white/60 text-sm">Identifying product details</p>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="absolute bottom-6 left-0 right-0 flex justify-center">
                     <button
                       onClick={captureAndIdentify}
                       disabled={isIdentifying}
-                      className="bg-purple-600 text-white px-8 py-3 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
+                      className="bg-purple-600 text-white px-8 py-4 rounded-full font-bold shadow-xl flex items-center gap-2 disabled:opacity-50 active:scale-95 transition-transform"
                     >
                       {isIdentifying ? (
                         <>
                           <Loader2 className="animate-spin" size={20} />
-                          <span>Identifying...</span>
+                          <span>Processing...</span>
                         </>
                       ) : (
                         <>
                           <Sparkles size={20} />
-                          <span>AI Identify</span>
+                          <span>Identify Now</span>
                         </>
                       )}
                     </button>
                   </div>
                   
-                  {/* Overlay guide for AI identification - More portrait for products */}
-                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center z-20">
-                    <div className="w-[75%] aspect-[3/4] relative">
+                  {/* Overlay guide for AI identification - Rectangular 95% width with 5:3 aspect ratio */}
+                  <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+                    <div className="w-[95%] aspect-[5/3] relative">
                       {/* Shading */}
-                      <div className="absolute inset-0 shadow-[0_0_0_2000px_rgba(0,0,0,0.7)] rounded-xl border border-purple-400/30"></div>
+                      <div className="absolute inset-0 shadow-[0_0_0_1000px_rgba(0,0,0,0.4)] rounded-xl border border-purple-400/30"></div>
                       
-                      {/* Box outline */}
-                      <div className="absolute inset-0 border-2 border-white/30 rounded-xl"></div>
-                      
-                      {/* Corners */}
-                      <div className="absolute top-[-4px] left-[-4px] w-14 h-14 border-t-8 border-l-8 border-white rounded-tl-xl drop-shadow-xl"></div>
-                      <div className="absolute top-[-4px] right-[-4px] w-14 h-14 border-t-8 border-r-8 border-white rounded-tr-xl drop-shadow-xl"></div>
-                      <div className="absolute bottom-[-4px] left-[-4px] w-14 h-14 border-b-8 border-l-8 border-white rounded-bl-xl drop-shadow-xl"></div>
-                      <div className="absolute bottom-[-4px] right-[-4px] w-14 h-14 border-b-8 border-r-8 border-white rounded-br-xl drop-shadow-xl"></div>
+                      {/* Corners - White larger borders (keeping high visibility) */}
+                      <div className="absolute top-0 left-0 w-12 h-12 border-t-4 border-l-4 border-white rounded-tl-xl"></div>
+                      <div className="absolute top-0 right-0 w-12 h-12 border-t-4 border-r-4 border-white rounded-tr-xl"></div>
+                      <div className="absolute bottom-0 left-0 w-12 h-12 border-b-4 border-l-4 border-white rounded-bl-xl"></div>
+                      <div className="absolute bottom-0 right-0 w-12 h-12 border-b-4 border-r-4 border-white rounded-br-xl"></div>
                     </div>
                   </div>
-                </div>
+                </>
               )}
-            </div>
+            </>
           )}
         </div>
         
