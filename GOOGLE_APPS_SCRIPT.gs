@@ -201,7 +201,22 @@ function doGet(e) {
       }
     }
 
-    return ContentService.createTextOutput(JSON.stringify({ users: users }))
+    // Get stores from a sheet named 'Stores'
+    const storeSheet = ss.getSheetByName("Stores");
+    let stores = [];
+    if (storeSheet) {
+      const data = storeSheet.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        if (data[i][0]) {
+          stores.push(data[i][0]);
+        }
+      }
+    }
+
+    return ContentService.createTextOutput(JSON.stringify({ 
+      users: users,
+      stores: stores
+    }))
       .setMimeType(ContentService.MimeType.JSON);
   } catch (err) {
     return ContentService.createTextOutput(JSON.stringify({ error: err.toString() }))

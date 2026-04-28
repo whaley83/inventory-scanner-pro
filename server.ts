@@ -80,6 +80,9 @@ async function startServer() {
 
       try {
         const data = JSON.parse(text);
+        if (data.stores) {
+          console.log('Stores received from Apps Script:', Array.isArray(data.stores) ? data.stores.length : 'not an array');
+        }
         res.json(data);
       } catch (parseError) {
         console.error('Failed to parse Apps Script response as JSON:', parseError);

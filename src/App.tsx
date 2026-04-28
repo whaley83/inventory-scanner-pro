@@ -23,8 +23,44 @@ export default function App() {
   const [loginEmail, setLoginEmail] = useState('');
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
+  const [stores, setStores] = useState<string[]>([]);
+  const [selectedStore, setSelectedStore] = useState<string>(() => localStorage.getItem('inv_selected_store') || '');
   
   const inventory = useInventory();
+
+  // Save selected store to localStorage
+  React.useEffect(() => {
+    localStorage.setItem('inv_selected_store', selectedStore);
+  }, [selectedStore]);
+
+  // Fetch stores on mount if already logged in
+  React.useEffect(() => {
+    if (user) {
+      const fetchInitialData = async () => {
+        try {
+          const res = await fetch(`/api/auth/permissions`);
+          if (res.ok) {
+            const data = await res.json();
+            if (data.stores && Array.isArray(data.stores)) {
+              setStores(data.stores);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to fetch initial data:', e);
+        }
+      };
+      fetchInitialData();
+    }
+  }, [user]);
+
+  const handleTabChange = (tab: Tab) => {
+    if (!selectedStore && (tab === 'PRODUCTS' || tab === 'SIGNOFF')) {
+      toast.error('Selection Required: Please choose a store location to continue.');
+      setActiveTab('SCAN');
+      return;
+    }
+    setActiveTab(tab);
+  };
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -62,8 +98,14 @@ export default function App() {
       if (res.ok) {
         try {
           const data = await res.json();
+          console.log('Login permissions data:', data);
           
           let foundUser = null;
+          
+          // Capture stores if present
+          if (data.stores && Array.isArray(data.stores)) {
+            setStores(data.stores);
+          }
           
           // Handle { users: [], stores: [] } or just an array
           const usersList = Array.isArray(data) ? data : (data.users || []);
@@ -130,8 +172,10 @@ export default function App() {
 
   const handleLogout = () => {
     setUser(null);
+    setSelectedStore('');
     localStorage.removeItem('inv_user');
     localStorage.removeItem('inv_stocktake_completed');
+    localStorage.removeItem('inv_selected_store');
   };
 
   if (!user) {
@@ -226,6 +270,9 @@ export default function App() {
             accessLevel={accessLevel}
             externalProductAction={externalProductAction}
             onClearExternalAction={() => setExternalProductAction(null)}
+            stores={stores}
+            selectedStore={selectedStore}
+            setSelectedStore={setSelectedStore}
           />
         )}
         {activeTab === 'PRODUCTS' && (
@@ -269,7 +316,7 @@ export default function App() {
         <div className="flex justify-around">
           {canScan && (
             <button
-              onClick={() => setActiveTab('SCAN')}
+              onClick={() => handleTabChange('SCAN')}
               className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${
                 activeTab === 'SCAN' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'
               }`}
@@ -280,7 +327,7 @@ export default function App() {
           )}
           
           <button
-            onClick={() => setActiveTab('PRODUCTS')}
+            onClick={() => handleTabChange('PRODUCTS')}
             className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${
               activeTab === 'PRODUCTS' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'
             }`}
@@ -291,7 +338,7 @@ export default function App() {
           
           {canSignOff && (
             <button
-              onClick={() => setActiveTab('SIGNOFF')}
+              onClick={() => handleTabChange('SIGNOFF')}
               className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${
                 activeTab === 'SIGNOFF' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'
               }`}
@@ -308,7 +355,7 @@ export default function App() {
           
           {canSettings && (
             <button
-              onClick={() => setActiveTab('SETTINGS')}
+              onClick={() => handleTabChange('SETTINGS')}
               className={`flex flex-col items-center py-3 px-4 flex-1 transition-colors ${
                 activeTab === 'SETTINGS' ? 'text-blue-600' : 'text-gray-500 hover:text-gray-900'
               }`}

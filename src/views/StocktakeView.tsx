@@ -20,6 +20,9 @@ interface Props {
     mode: 'Stocktake' | 'Receiving';
   } | null;
   onClearExternalAction?: () => void;
+  stores: string[];
+  selectedStore: string;
+  setSelectedStore: (store: string) => void;
 }
 
 type Step = 'LANDING' | 'SCAN' | 'COUNT' | 'NEW_PRODUCT' | 'ERROR' | 'SUCCESS' | 'COMPLETED';
@@ -35,7 +38,10 @@ export function StocktakeView({
   userEmail, 
   accessLevel,
   externalProductAction,
-  onClearExternalAction
+  onClearExternalAction,
+  stores,
+  selectedStore,
+  setSelectedStore
 }: Props) {
   const [step, setStep] = useState<Step>(() => {
     const isCompleted = localStorage.getItem('inv_stocktake_completed') === 'true';
@@ -53,43 +59,21 @@ export function StocktakeView({
   const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
   const [isSaving, setIsSaving] = useState(false);
   const [isFromImage, setIsFromImage] = useState(false);
-  const [stores, setStores] = useState<string[]>([]);
-  const [selectedStore, setSelectedStore] = useState<string>(() => localStorage.getItem('inv_selected_store') || '');
+  const [isLoadingStores, setIsLoadingStores] = useState(false);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Fetch stores from permissions
   useEffect(() => {
-    const fetchStores = async () => {
-      try {
-        const res = await fetch(`/api/auth/permissions?email=${userEmail || ''}`);
-        if (res.ok) {
-          const data = await res.json();
-          console.log('Permissions data:', data);
-          if (data.stores && Array.isArray(data.stores)) {
-            setStores(data.stores);
-          } else if (data.permissions && Array.isArray(data.permissions)) {
-            const uniqueStores = Array.from(new Set(data.permissions.map((p: any) => p.store).filter(Boolean))) as string[];
-            setStores(uniqueStores);
-          } else if (Array.isArray(data)) {
-            const uniqueStores = Array.from(new Set(data.map((p: any) => p.store || p).filter(Boolean))) as string[];
-            setStores(uniqueStores);
-          }
-        }
-      } catch (error) {
-        console.error('Failed to fetch stores:', error);
-      }
-    };
-    fetchStores();
-  }, [userEmail]);
-
-  // Save selected store to localStorage
-  useEffect(() => {
-    if (selectedStore) {
-      localStorage.setItem('inv_selected_store', selectedStore);
+    if (stores.length === 0 && userEmail) {
+      setIsLoadingStores(true);
+      // Wait a bit to see if they arrive from App.tsx (which fetches on mount)
+      const timer = setTimeout(() => setIsLoadingStores(false), 3000);
+      return () => clearTimeout(timer);
+    } else {
+      setIsLoadingStores(false);
     }
-  }, [selectedStore]);
+  }, [stores, userEmail]);
 
   // Auto-focus input for bluetooth scanners
   useEffect(() => {
@@ -566,28 +550,39 @@ export function StocktakeView({
                 onChange={(e) => setSelectedStore(e.target.value)}
                 className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0 transition-colors"
               >
-                <option value="">-- Select Store --</option>
-                {stores.map(store => (
-                  <option key={store} value={store}>{store}</option>
-                ))}
+                {isLoadingStores ? (
+                  <option value="">Loading stores...</option>
+                ) : (
+                  <option value="">-- Select Store --</option>
+                )}
+                
+                {stores.length > 0 ? (
+                  stores.map(store => (
+                    <option key={store} value={store}>{store}</option>
+                  ))
+                ) : (
+                  !isLoadingStores && <option disabled>No Stores Found (Check Database)</option>
+                )}
               </select>
             </div>
 
             <div className="flex bg-gray-100 p-1 rounded-2xl">
               <button
                 onClick={() => setMode('Stocktake')}
+                disabled={!selectedStore}
                 className={`flex-1 py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all ${
                   mode === 'Stocktake' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
+                } ${!selectedStore ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
               >
                 <ClipboardList size={20} />
                 Stocktake
               </button>
               <button
                 onClick={() => setMode('Receiving')}
+                disabled={!selectedStore}
                 className={`flex-1 py-3 rounded-xl font-semibold flex items-center justify-center gap-2 transition-all ${
                   mode === 'Receiving' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
-                }`}
+                } ${!selectedStore ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
               >
                 <Truck size={20} />
                 Receiving
@@ -596,15 +591,13 @@ export function StocktakeView({
 
             <button
               onClick={() => {
-                if (!selectedStore) {
-                  toast.error('Please select a store location first');
-                  return;
-                }
+                if (!selectedStore) return;
                 setStep('SCAN');
               }}
+              disabled={!selectedStore}
               className={`w-full py-4 text-white rounded-2xl font-semibold text-xl flex items-center justify-center space-x-2 shadow-lg transition-all active:scale-95 ${
                 mode === 'Stocktake' ? 'bg-blue-600 hover:bg-blue-700 shadow-blue-200' : 'bg-green-600 hover:bg-green-700 shadow-green-200'
-              }`}
+              } ${!selectedStore ? 'opacity-50 grayscale cursor-not-allowed' : ''}`}
             >
               <span>Start Scanning</span>
             </button>
