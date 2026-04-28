@@ -49,6 +49,7 @@ export function StocktakeView({
   const [isNewProduct, setIsNewProduct] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [piecesPerBox, setPiecesPerBox] = useState('1');
+  const [expectedQty, setExpectedQty] = useState('');
   const [unitType, setUnitType] = useState<'Piece' | 'Box'>('Piece');
   const [isSaving, setIsSaving] = useState(false);
   const [isFromImage, setIsFromImage] = useState(false);
@@ -375,16 +376,26 @@ export function StocktakeView({
 
     setIsSaving(true);
     
-    let qty = 0;
-    if (unitType === 'Piece') {
-      qty = parseInt(physicalQty, 10);
-    } else {
-      qty = parseInt(physicalQty, 10) * parseInt(piecesPerBox, 10);
-    }
+    let qty = parseInt(physicalQty, 10);
+    let expected = mode === 'Receiving' ? parseInt(expectedQty || '0', 10) : 0;
+    const pPerBox = parseInt(piecesPerBox || '1', 10);
 
-    // For new products, variance is just the quantity since original was 0
-    const variance = qty;
-    const variancePercentage = 1.0; // +100%
+    if (unitType === 'Box') {
+      qty = qty * pPerBox;
+      if (mode === 'Receiving') {
+        expected = expected * pPerBox;
+      }
+    }
+    
+    const variance = qty - expected;
+    let variancePercentage = 1.0; // +100%
+    if (expected !== 0) {
+      variancePercentage = (variance / expected);
+    } else if (qty === 0 && expected === 0) {
+      variancePercentage = 0;
+    } else if (variance < 0) {
+      variancePercentage = -1.0; 
+    }
 
     const record: StocktakeRecord = {
       id: crypto.randomUUID(),
@@ -399,9 +410,10 @@ export function StocktakeView({
       originalQuantity: 0,
       physicalQty: qty,
       physicalCount: qty,
+      expectedQty: expected,
       unitType: unitType,
       variance: variance,
-      variancePercent: 100,
+      variancePercent: Math.round(variancePercentage * 100),
       variancePercentage: variancePercentage,
       timestamp: new Date().toISOString(),
       user: userEmail || 'Anonymous',
@@ -440,19 +452,25 @@ export function StocktakeView({
 
     setIsSaving(true);
     
-    let qty = 0;
-    if (unitType === 'Piece') {
-      qty = parseInt(physicalQty, 10);
-    } else {
-      qty = parseInt(physicalQty, 10) * parseInt(piecesPerBox, 10);
+    let qty = parseInt(physicalQty, 10);
+    let expectedVal = mode === 'Receiving' ? parseInt(expectedQty || '0', 10) : product.quantity;
+    const pPerBox = parseInt(piecesPerBox || '1', 10);
+
+    if (unitType === 'Box') {
+      qty = qty * pPerBox;
+      if (mode === 'Receiving') {
+        expectedVal = expectedVal * pPerBox;
+      }
     }
 
-    const variance = qty - product.quantity;
+    const variance = qty - expectedVal;
     let variancePercentage = 0;
-    if (product.quantity !== 0) {
-      variancePercentage = (variance / product.quantity);
+    if (expectedVal !== 0) {
+      variancePercentage = (variance / expectedVal);
     } else if (variance > 0) {
       variancePercentage = 1.0; // +100%
+    } else if (variance < 0) {
+      variancePercentage = -1.0; // -100%
     }
 
     const productName = product.variantName && product.name.includes(product.variantName) 
@@ -472,6 +490,7 @@ export function StocktakeView({
       originalQuantity: product.quantity,
       physicalQty: qty,
       physicalCount: qty,
+      expectedQty: expectedVal,
       unitType: unitType,
       variance: variance,
       variancePercent: Math.round(variancePercentage * 100),
@@ -507,6 +526,7 @@ export function StocktakeView({
     setBarcode('');
     setProduct(null);
     setPhysicalQty('');
+    setExpectedQty('');
     setUnitType('Piece');
     setPiecesPerBox('');
     setIsFromImage(false);
@@ -740,6 +760,20 @@ export function StocktakeView({
             </div>
 
             <form onSubmit={handleCountSubmit} className="space-y-4">
+              {mode === 'Receiving' && (
+                <div>
+                  <label className="block text-sm font-bold text-white/70 uppercase tracking-wider mb-2">Expected Qty (from Invoice)</label>
+                  <input
+                    type="number"
+                    required
+                    min="0"
+                    value={expectedQty}
+                    onChange={(e) => setExpectedQty(e.target.value)}
+                    className="w-full text-center text-3xl font-bold py-4 bg-white/10 border-2 border-white/20 rounded-2xl focus:border-white focus:bg-white/20 focus:outline-none text-white transition-all placeholder:text-white/20"
+                    placeholder="0"
+                  />
+                </div>
+              )}
               <div className="flex bg-white/10 p-1 rounded-lg mb-4">
                 <button
                   type="button"
@@ -875,19 +909,32 @@ export function StocktakeView({
                 placeholder="Optional description..."
               />
             </div>
-            <div className="grid grid-cols-1 gap-4">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Barcode</label>
+              <input
+                type="text"
+                required
+                value={product.barcode}
+                onChange={(e) => setProduct({ ...product, barcode: e.target.value })}
+                className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl text-gray-500"
+                readOnly
+              />
+            </div>
+
+            {mode === 'Receiving' && (
               <div>
-                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Barcode</label>
+                <label className="block text-sm font-bold text-gray-700 mb-1 uppercase tracking-wider">Expected Qty</label>
                 <input
-                  type="text"
+                  type="number"
                   required
-                  value={product.barcode}
-                  onChange={(e) => setProduct({ ...product, barcode: e.target.value })}
-                  className="w-full p-4 bg-gray-50 border-2 border-gray-200 rounded-2xl text-gray-500"
-                  readOnly
+                  min="0"
+                  value={expectedQty}
+                  onChange={(e) => setExpectedQty(e.target.value)}
+                  className="w-full p-4 bg-white border-2 border-gray-200 rounded-2xl focus:border-blue-500 focus:ring-0"
+                  placeholder="0"
                 />
               </div>
-            </div>
+            )}
 
             <div>
               <label className="block text-sm font-bold text-gray-700 mb-2 uppercase tracking-wider">

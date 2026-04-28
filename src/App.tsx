@@ -298,7 +298,7 @@ export default function App() {
             >
               <div className="relative">
                 <ClipboardCheck size={24} className="mb-1" />
-                {inventory.records.filter(r => r.status === 'Pending' && r.variance !== 0).length > 0 && (
+                {inventory.records.some(r => r.status === 'Pending') && (
                   <span className="absolute -top-1 -right-2 w-3 h-3 bg-red-500 rounded-full border-2 border-white"></span>
                 )}
               </div>

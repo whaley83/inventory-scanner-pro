@@ -56,7 +56,9 @@ async function startServer() {
         : scriptsUrl;
       console.log(`Fetching permissions from Apps Script: ${targetUrl}`);
       
-      const response = await fetch(targetUrl);
+      const response = await fetch(targetUrl, {
+        redirect: 'follow'
+      } as any);
       const contentType = response.headers.get('content-type');
       let text = '';
       try {
@@ -85,14 +87,15 @@ async function startServer() {
         
         // If it's HTML, it's likely a login page or error page from Google
         if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html')) {
+          console.error('Apps Script returned HTML instead of JSON. Ensure "Who has access" is set to "Anyone".');
           return res.status(500).json({ 
-            error: 'Apps Script returned an HTML page instead of JSON. This usually means the script is not published as "Anyone" or requires a Google login, or a runtime error occurred.',
+            error: 'Apps Script returned HTML. Ensure "Who has access" is set to "Anyone" and script is deployed.',
             isHtml: true,
             htmlSnippet: text.substring(0, 200)
           });
         }
         
-        res.status(500).json({ error: 'Apps Script returned invalid JSON' });
+        res.status(500).json({ error: 'Apps Script returned invalid JSON', details: text.substring(0, 200) });
       }
     } catch (error) {
       logError('Failed to fetch permissions from Apps Script', error);
@@ -438,49 +441,75 @@ async function startServer() {
         return res.json({ records: [] });
       }
 
-      let allRecords: any[] = [];
+      const allRecords: any[] = [];
 
       for (const sheetName of scanSheets) {
         try {
           const response = await sheets.spreadsheets.values.get({
             spreadsheetId: spreadsheetId as string,
-            range: `'${sheetName}'!A2:O`, // Fetch up to column O (15 columns)
+            range: `'${sheetName}'!A1:Q`, // Fetch including headers to detect structure
           });
 
-          const rows = response.data.values || [];
+          const allRows = response.data.values || [];
+          if (allRows.length === 0) continue;
+
+          const headers = allRows[0];
+          const isNewStructure = headers[0] === 'Record ID';
+          const rows = allRows.slice(1);
+
           const sheetRecords = rows
-            .filter(row => row[1]) // Ensure Product Name exists (Index 1)
+            .filter(row => row[1] || row[2]) // Ensure some product info exists
             .map((row, index) => {
-              // Mapping based on: Category, Product Name, Variant, Description, SKU, Barcode, Original Qty, Physical Qty, Unit Type, Variance, Variance %, Timestamp, User, Status
               const isReceiving = sheetName.startsWith('Receiving-');
+              
+              // Mapping indices based on structure
+              const idx = {
+                id: isNewStructure ? 0 : -1,
+                category: isNewStructure ? 1 : 0,
+                productName: isNewStructure ? 2 : 1,
+                variant: isNewStructure ? 3 : 2,
+                description: isNewStructure ? 4 : 3,
+                sku: isNewStructure ? 5 : 4,
+                barcode: isNewStructure ? 7 : 7,
+                origQty: isNewStructure ? 8 : 8,
+                physQty: isNewStructure ? 9 : 9,
+                unit: isNewStructure ? 10 : 10,
+                variance: isNewStructure ? 11 : 11,
+                vPercent: isNewStructure ? 12 : 12,
+                timestamp: isNewStructure ? 13 : 13,
+                user: isNewStructure ? 14 : 14,
+                status: isNewStructure ? 15 : 15,
+                auditor: isNewStructure ? 16 : 16
+              };
+
               return {
-                id: `${sheetName}-${index}`, // Unique ID for table keys
-                category: row[0] || '',
-                productName: row[1] || '',
-                variant: row[2] || '',
-                description: row[3] || '',
-                sku: row[4] || '',
-                barcode: row[5] || '',
-                originalQuantity: parseFloat(row[6]) || 0,
-                physicalQty: parseFloat(row[7]) || 0,
-                physicalCount: parseFloat(row[7]) || 0,
-                unitType: row[8] || 'Piece',
-                variance: parseFloat(row[9]) || 0,
-                variancePercentage: parseFloat(row[10]) || 0,
-                timestamp: row[11] || new Date().toISOString(),
-                user: row[12] || 'Unknown',
-                status: row[13] || 'Pending',
-                auditor: row[14] || '',
+                id: idx.id !== -1 && row[idx.id] ? row[idx.id] : `${sheetName}-${index}`, 
+                category: row[idx.category] || '',
+                productName: row[idx.productName] || '',
+                variant: row[idx.variant] || '',
+                description: row[idx.description] || '',
+                sku: row[idx.sku] || '',
+                barcode: row[idx.barcode] || '',
+                originalQuantity: parseFloat(row[idx.origQty]) || 0,
+                expectedQty: parseFloat(row[idx.origQty]) || 0,
+                physicalQty: parseFloat(row[idx.physQty]) || 0,
+                physicalCount: parseFloat(row[idx.physQty]) || 0,
+                unitType: row[idx.unit] || 'Piece',
+                variance: parseFloat(row[idx.variance]) || 0,
+                variancePercentage: parseFloat(row[idx.vPercent]) || 0,
+                timestamp: row[idx.timestamp] || new Date().toISOString(),
+                user: row[idx.user] || 'Unknown',
+                status: row[idx.status] || 'Pending',
+                auditor: row[idx.auditor] || '',
                 mode: isReceiving ? 'Receiving' : 'Stocktake',
                 isNewProduct: sheetName.startsWith('New-'),
                 sheetName: sheetName,
               };
             });
           
-          allRecords = [...allRecords, ...sheetRecords];
+          allRecords.push(...sheetRecords);
         } catch (err) {
           logError(`Error fetching from sheet ${sheetName}`, err);
-          // Continue to next sheet
         }
       }
 
@@ -513,18 +542,20 @@ async function startServer() {
           description: record.description || '',
           sku: record.sku || '',
           barcode: record.barcode || '',
-          originalQuantity: record.originalQuantity || 0,
+          originalQuantity: record.mode === 'Receiving' ? (record.expectedQty || 0) : (record.originalQuantity || 0),
+          expectedQty: record.expectedQty || 0,
           physicalQty: record.physicalCount || 0,
           quantity: record.physicalCount || 0, // Backward compatibility for script
           physicalCount: record.physicalCount || 0,
           unitType: record.unitType || 'Piece',
-          variance: record.variance || 0,
-          variancePercentage: record.variancePercentage || 0,
+          variance: parseFloat(String(record.variance || 0)),
+          variancePercentage: record.variancePercentage !== undefined ? parseFloat(String(record.variancePercentage)) : (record.variancePercent !== undefined ? parseFloat(String(record.variancePercent)) / 100 : 0),
           timestamp: record.timestamp,
           user: record.user,
           userEmail: record.userEmail || record.user, // Ensure userEmail is sent as requested
           auditor: record.auditor || '',
           status: record.status,
+          mode: record.mode, // Send mode to script
           isNewProduct: record.isNewProduct || false,
           sheetName: record.sheetName, // Send sheetName to script
           update: record.update, // Send update flag to script
@@ -534,14 +565,37 @@ async function startServer() {
         const response = await fetch(scriptsUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          redirect: 'follow', // Use standard fetch property
           body: JSON.stringify(payload)
-        });
+        } as any);
+
+        const responseText = await response.text();
+        
         if (response.ok) {
-          return res.json({ success: true });
+          try {
+            const result = JSON.parse(responseText);
+            return res.json(result);
+          } catch (e) {
+            // If it's valid OK but not JSON, it might be a redirect page or something else
+            if (responseText.includes('<!DOCTYPE')) {
+              console.error('Apps Script returned HTML instead of JSON. Check your deployment permissions.');
+              return res.status(500).json({ 
+                error: 'Apps Script returned HTML. Ensure "Who has access" is set to "Anyone".',
+                details: responseText.substring(0, 200) 
+              });
+            }
+            return res.json({ success: true, message: responseText });
+          }
         }
-        logError('Apps Script Error', await response.text());
+        
+        logError('Apps Script Error', responseText);
+        return res.status(response.status).json({ 
+          error: 'Apps Script returned error status', 
+          details: responseText.substring(0, 500) 
+        });
       } catch (error) {
         logError('Failed to send to Apps Script', error);
+        return res.status(500).json({ error: 'Server failed to reach Apps Script' });
       }
     }
 

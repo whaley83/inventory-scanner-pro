@@ -245,12 +245,18 @@ export function useInventory() {
   };
 
   const saveRecordToScript = async (record: StocktakeRecord) => {
+    let spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
+      spreadsheetId = defaultSpreadsheetId;
+    }
+
     try {
       const res = await fetch('/api/scripts/post', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ...record,
+          spreadsheetId,
           category: record.category || '',
           productName: record.productName || '',
           variant: record.variant || '',
@@ -259,6 +265,10 @@ export function useInventory() {
         })
       });
       if (res.ok) {
+        const data = await res.json();
+        if (data.sheetName) {
+          setRecords(prev => prev.map(r => r.id === record.id ? { ...r, sheetName: data.sheetName } : r));
+        }
         toast.success('Data Synced to Cloud');
         return true;
       }
@@ -270,30 +280,61 @@ export function useInventory() {
   };
 
   const updateRecordStatus = async (id: string, status: StocktakeRecord['status'], auditor?: string) => {
+    // Optimistically update local state
     setRecords(prev => prev.map(r => r.id === id ? { ...r, status, auditor: auditor || r.auditor } : r));
     
-    // If the record is already in Google Sheets, update it immediately
+    // Check if the record exists in our state to get its current info
     const record = records.find(r => r.id === id);
-    if (record && record.sheetName) {
-      const spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+    if (record) {
+      let spreadsheetId = import.meta.env.VITE_GOOGLE_SHEET_ID;
+      if (!spreadsheetId || spreadsheetId === 'undefined' || spreadsheetId === 'null') {
+        spreadsheetId = defaultSpreadsheetId;
+      }
+      
+      // Calculate sheetName if it's missing (failsafe)
+      const sheetName = record.sheetName || (() => {
+        const scanDate = new Date(record.timestamp);
+        const dateStr = `${scanDate.getFullYear()}-${String(scanDate.getMonth() + 1).padStart(2, '0')}-${String(scanDate.getDate()).padStart(2, '0')}`;
+        let prefix = 'Scan-';
+        if (record.isNewProduct) prefix = 'New-';
+        else if (record.mode === 'Receiving') prefix = 'Receiving-';
+        return `${prefix}${dateStr}`;
+      })();
+
       try {
-        await fetch('/api/sheets/records', {
+        const res = await fetch('/api/sheets/records', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             spreadsheetId,
             record: {
               ...record,
+              category: record.category || '',
+              productName: record.productName || '',
+              variant: record.variant || '',
               status,
               auditor: auditor || record.auditor,
+              sheetName,
               update: true
             }
           })
         });
-        toast.success(`Record ${status}`);
+        
+        if (res.ok) {
+          toast.success(`Record ${status} & Synced`);
+          // If it was successfully synced and is no longer pending, we can remove it from local state to keep it clean
+          // but we wait a bit so the UI transition looks smooth
+          if (status !== 'Pending') {
+            setTimeout(() => {
+              setRecords(prev => prev.filter(r => r.id !== id));
+            }, 1000);
+          }
+        } else {
+          toast.error('Failed to sync status to Google Sheets. It will remain in Pending sync list.');
+        }
       } catch (error) {
         console.error('Failed to update record status on server', error);
-        toast.error('Failed to update record in Google Sheets');
+        toast.error('Failed to update record in Google Sheets. Try bulk sync later.');
       }
     }
   };

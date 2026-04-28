@@ -36,6 +36,7 @@ export interface StocktakeRecord {
   originalQuantity: number;
   physicalQty: number;
   physicalCount: number;
+  expectedQty?: number;
   unitType: 'Piece' | 'Box';
   variance: number;
   variancePercent?: number;

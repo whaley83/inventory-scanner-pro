@@ -15,12 +15,14 @@ interface Props {
 }
 
 export function SignOffView({ records, products, updateRecordStatus, deleteRecord, onSyncAll, onSyncProducts, isSyncing, userEmail }: Props) {
-  const [filter, setFilter] = useState<'ALL' | 'VARIANCE' | 'PENDING'>('PENDING');
+  const [filter, setFilter] = useState<'ALL' | 'VARIANCE' | 'PENDING' | 'STOCKTAKE' | 'RECEIVING'>('PENDING');
   const [recordToDelete, setRecordToDelete] = useState<string | null>(null);
 
   const filteredRecords = records.filter(r => {
     if (filter === 'VARIANCE') return r.variance !== 0;
     if (filter === 'PENDING') return r.status === 'Pending';
+    if (filter === 'STOCKTAKE') return r.mode === 'Stocktake';
+    if (filter === 'RECEIVING') return r.mode === 'Receiving';
     return true;
   });
 
@@ -80,8 +82,8 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-6 gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-gray-800">GM Sign-Off</h1>
-          <p className="text-gray-500 text-sm">Review and approve stocktake variances</p>
+          <h1 className="text-2xl font-bold text-gray-800">Sign Off</h1>
+          <p className="text-gray-500 text-sm">Review and approve variations</p>
         </div>
         
         <div className="flex items-center gap-2">
@@ -97,22 +99,34 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
             </button>
           )}
           
-          <div className="flex bg-gray-100 p-1 rounded-lg">
+          <div className="flex bg-gray-100 p-1 rounded-lg overflow-x-auto">
             <button
               onClick={() => setFilter('VARIANCE')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'VARIANCE' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${filter === 'VARIANCE' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               Has Variance
             </button>
             <button
               onClick={() => setFilter('PENDING')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'PENDING' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${filter === 'PENDING' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               Pending
             </button>
             <button
+              onClick={() => setFilter('STOCKTAKE')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${filter === 'STOCKTAKE' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              Stocktake
+            </button>
+            <button
+              onClick={() => setFilter('RECEIVING')}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${filter === 'RECEIVING' ? 'bg-white text-green-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+            >
+              Receiving
+            </button>
+            <button
               onClick={() => setFilter('ALL')}
-              className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${filter === 'ALL' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-all whitespace-nowrap ${filter === 'ALL' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
             >
               All Records
             </button>
@@ -128,8 +142,12 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                 <th className="p-4 font-medium whitespace-nowrap">Category</th>
                 <th className="p-4 font-medium whitespace-nowrap">Store</th>
                 <th className="p-4 font-medium whitespace-nowrap">Product</th>
-                <th className="p-4 font-medium whitespace-nowrap">Original Qty</th>
-                <th className="p-4 font-medium whitespace-nowrap">Physical / Received</th>
+                <th className="p-4 font-medium whitespace-nowrap">
+                  {filter === 'STOCKTAKE' ? 'Original Qty' : filter === 'RECEIVING' ? 'Expected Qty' : 'Expected / Original'}
+                </th>
+                <th className="p-4 font-medium whitespace-nowrap">
+                  {filter === 'STOCKTAKE' ? 'New Qty' : filter === 'RECEIVING' ? 'Actual Received Qty' : 'Actual / New'}
+                </th>
                 <th className="p-4 font-medium whitespace-nowrap">Variance</th>
                 <th className="p-4 font-medium whitespace-nowrap">Time / User</th>
                 <th className="p-4 font-medium text-right whitespace-nowrap">Action</th>
@@ -165,32 +183,26 @@ export function SignOffView({ records, products, updateRecordStatus, deleteRecor
                     </div>
                   </td>
                   <td className="p-4 whitespace-nowrap text-gray-600">
-                    {record.mode === 'Receiving' ? (
-                      <span className="text-gray-400 text-xs">-</span>
-                    ) : (
-                      record.originalQuantity
-                    )}
+                    {record.mode === 'Receiving' ? (record.expectedQty ?? '-') : record.originalQuantity}
                   </td>
                   <td className="p-4 whitespace-nowrap font-semibold">{record.physicalQty}</td>
                   <td className="p-4 whitespace-nowrap">
-                    {record.mode !== 'Receiving' && (
-                      <div className="flex flex-col gap-1">
-                        <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                          record.variance === 0 ? 'bg-gray-100 text-gray-800' :
-                          record.variance > 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                    <div className="flex flex-col gap-1">
+                      <span className={`inline-flex items-center w-fit px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                        record.variance === 0 ? 'bg-gray-100 text-gray-800' :
+                        record.variance > 0 ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'
+                      }`}>
+                        {record.variance > 0 ? '+' : ''}{record.variance}
+                      </span>
+                      {record.variance !== 0 && (
+                        <span className={`text-xs font-medium ${
+                          record.variance > 0 ? 'text-green-600' : 'text-red-600'
                         }`}>
-                          {record.variance > 0 ? '+' : ''}{record.variance}
+                          {record.variance > 0 ? '+' : ''}
+                          {( (record.variancePercentage !== undefined ? record.variancePercentage : (record.variancePercent || 0) / 100) * 100).toFixed(0)}%
                         </span>
-                        {record.variance !== 0 && (
-                          <span className={`text-xs font-medium ${
-                            record.variance > 0 ? 'text-green-600' : 'text-red-600'
-                          }`}>
-                            {record.variance > 0 ? '+' : ''}
-                            {( (record.variancePercentage !== undefined ? record.variancePercentage : (record.variancePercent || 0) / 100) * 100).toFixed(0)}%
-                          </span>
-                        )}
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </td>
                   <td className="p-4 whitespace-nowrap text-sm text-gray-500">
                     <div>{formatDate(record.timestamp)}</div>
